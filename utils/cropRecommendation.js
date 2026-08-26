@@ -68,6 +68,7 @@ Also give general soil, weather, and farming advice as short bullet points.`;
     if (status === 401 || status === 403) {
       throw new GeminiServiceError("The AI service rejected the request. The API key may be invalid or lack permission.", 502, "AUTH_FAILED");
     }
+    console.error("[CropRecommendation] Unclassified error reaching the AI service:", err?.message || err, err?.cause || "");
     throw new GeminiServiceError("Could not reach the AI service. Please check your network connection and try again.", 502, "NETWORK_ERROR");
   }
 

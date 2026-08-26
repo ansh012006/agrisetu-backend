@@ -80,6 +80,15 @@ export const analyzeCropImage = async ({ buffer, mimeType }) => {
     if (status === 401 || status === 403) {
       throw new GeminiServiceError("The AI service rejected the request. The API key may be invalid or lack permission.", 502, "AUTH_FAILED");
     }
+    // Logged here specifically because this is the one branch where the
+    // real cause was previously discarded entirely - every other branch
+    // above at least tells you it was a genuine 429/401/403 from
+    // Google's servers, but this catch-all could be anything (DNS
+    // failure, TLS error, Render's own outbound network issue, etc.)
+    // and the generic message shown to the user doesn't distinguish
+    // between them. Check Render's Logs tab for this line when this
+    // error occurs.
+    console.error("[Gemini] Unclassified error reaching the AI service:", err?.message || err, err?.cause || "");
     throw new GeminiServiceError("Could not reach the AI service. Please check your network connection and try again.", 502, "NETWORK_ERROR");
   }
 
