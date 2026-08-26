@@ -57,7 +57,7 @@ export const analyzeCropImage = async ({ buffer, mimeType }) => {
 
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    model: process.env.GEMINI_MODEL || "gemini-3.6-flash",
     generationConfig: { responseMimeType: "application/json", responseSchema },
   });
 
@@ -107,6 +107,6 @@ export const analyzeCropImage = async ({ buffer, mimeType }) => {
   return {
     ...parsed,
     confidence: Math.max(0, Math.min(100, parsed.confidence)),
-    modelUsed: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    modelUsed: process.env.GEMINI_MODEL || "gemini-3.6-flash",
   };
 };
