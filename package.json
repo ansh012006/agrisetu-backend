@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "seed:admin": "node seed/seedAdmin.js",
-    "seed:input-rules": "node seed/seedInputRules.js"
+    "seed:input-rules": "node seed/seedInputRules.js",
+    "seed:schemes": "node seed/seedSchemes.js"
   },
   "dependencies": {
     "express": "^4.19.2",

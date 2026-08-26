@@ -11,6 +11,7 @@ import diseaseRoutes from "./routes/diseaseRoutes.js";
 import mandiRoutes from "./routes/mandiRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import cropRecommendationRoutes from "./routes/cropRecommendationRoutes.js";
+import schemeRoutes from "./routes/schemeRoutes.js";
 import weatherRoutes from "./routes/weatherRoutes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
@@ -53,6 +54,7 @@ app.use("/api/disease", aiLimiter, diseaseRoutes);
 app.use("/api/mandi", mandiRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/crop-recommendations", aiLimiter, cropRecommendationRoutes);
+app.use("/api/schemes", schemeRoutes);
 app.use("/api/weather", weatherRoutes);
 
 app.use(notFound);
