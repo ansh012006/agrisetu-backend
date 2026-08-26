@@ -106,12 +106,17 @@ export const generateCoupon = async ({ farmerId, landId, product, productCategor
     status: "active",
     expiresAt: Coupon.defaultExpiry(),
   });
-  // The Android app's Coupon model expects `land` as a populated
-  // {landName} object (matching what getMyCoupons already returns
-  // below) - the freshly-created document only has land as a raw
-  // ObjectId, which would fail to parse on the client as a JSON string
-  // where an object was expected. Re-fetch populated before returning.
-  coupon = await Coupon.findById(coupon._id).populate("land", "landName");
+  // The Android app's Coupon model expects `land` AND `farmer` as
+  // populated objects ({landName} / {name}), matching the shape the
+  // dealer-facing redeemCoupon/lookupCoupon below already return - the
+  // freshly-created document only has both as raw ObjectIds, which
+  // fails to parse on the client (Gson throws "Expected BEGIN_OBJECT
+  // but was STRING") since the shared Coupon model expects an object,
+  // not a bare ID string, for both fields. Re-fetch populated before
+  // returning, exactly the same fix already applied to `land` here -
+  // this one was missed because `farmer` was added to the Android
+  // model in a later change than this function.
+  coupon = await Coupon.findById(coupon._id).populate("land", "landName").populate("farmer", "name");
 
   return { coupon, remainingQuota: Math.max(0, maxAllowed - updatedCounter.totalAllocated) };
 };
@@ -119,7 +124,7 @@ export const generateCoupon = async ({ farmerId, landId, product, productCategor
 export const getMyCoupons = async (farmerId, status) => {
   const query = { farmer: farmerId };
   if (status) query.status = status;
-  return Coupon.find(query).sort({ createdAt: -1 }).populate("land", "landName");
+  return Coupon.find(query).sort({ createdAt: -1 }).populate("land", "landName").populate("farmer", "name");
 };
 
 /**
