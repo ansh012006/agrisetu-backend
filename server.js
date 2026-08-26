@@ -19,6 +19,20 @@ connectDB();
 
 const app = express();
 
+// Render (like Heroku, Railway, and virtually every PaaS) sits in front
+// of this app as a reverse proxy and forwards the real client IP via
+// the X-Forwarded-For header. Express doesn't trust that header by
+// default — a legitimate security default, since blindly trusting it
+// without confirming you're genuinely behind a proxy would let a client
+// spoof their own IP (e.g. to dodge rate limiting) just by setting the
+// header themselves. `1` here means "trust exactly one hop" — matching
+// Render's setup (one reverse proxy in front of this app), not an
+// arbitrary number of hops. Without this, express-rate-limit correctly
+// detects the mismatch and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on
+// every single request — which was actually breaking every route in
+// production, including the AI ones, not something cosmetic.
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(cors()); // open CORS - this backend is called by a native Android app, not a browser, so there's no origin to restrict to
 app.use(express.json());
