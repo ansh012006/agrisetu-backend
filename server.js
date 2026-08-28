@@ -12,6 +12,8 @@ import mandiRoutes from "./routes/mandiRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import cropRecommendationRoutes from "./routes/cropRecommendationRoutes.js";
 import schemeRoutes from "./routes/schemeRoutes.js";
+import marketplaceRoutes from "./routes/marketplaceRoutes.js";
+import machineryRoutes from "./routes/machineryRoutes.js";
 import weatherRoutes from "./routes/weatherRoutes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
@@ -55,6 +57,8 @@ app.use("/api/mandi", mandiRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/crop-recommendations", aiLimiter, cropRecommendationRoutes);
 app.use("/api/schemes", schemeRoutes);
+app.use("/api/marketplace", marketplaceRoutes);
+app.use("/api/machinery", machineryRoutes);
 app.use("/api/weather", weatherRoutes);
 
 app.use(notFound);
