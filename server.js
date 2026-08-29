@@ -48,7 +48,11 @@ const aiLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 30, message: { succ
 app.use("/api", generalLimiter);
 
 app.get("/", (req, res) => {
-  res.json({ success: true, message: "AgriSetu backend is running." });
+  // buildMarker is a deliberate, visible way to confirm exactly which
+  // deploy is actually live - visit this URL directly in a browser and
+  // compare against what was just pushed, rather than trusting Render's
+  // dashboard alone. Safe to remove whenever this stops being useful.
+  res.json({ success: true, message: "AgriSetu backend is running.", buildMarker: "v13-2026-08-29" });
 });
 
 app.use("/api/auth", authRoutes);
