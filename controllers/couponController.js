@@ -1,5 +1,5 @@
 import { validationResult } from "express-validator";
-import { generateCoupon, getMyCoupons, getMyLimits, redeemCoupon, lookupCoupon, EligibilityError } from "../services/couponService.js";
+import { generateCoupon, getMyCoupons, getMyLimits, redeemCoupon, lookupCoupon, cancelCoupon, EligibilityError } from "../services/couponService.js";
 
 // @route   POST /api/coupons
 export const createCoupon = async (req, res, next) => {
@@ -71,6 +71,20 @@ export const redeemCouponHandler = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Coupon code is required." });
     }
     const coupon = await redeemCoupon(couponCode, req.user._id);
+    res.status(200).json({ success: true, coupon });
+  } catch (error) {
+    if (error instanceof EligibilityError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    }
+    next(error);
+  }
+};
+
+// @route   PATCH /api/coupons/:id/cancel
+// @access  farmer
+export const cancelCouponHandler = async (req, res, next) => {
+  try {
+    const coupon = await cancelCoupon(req.params.id, req.user._id);
     res.status(200).json({ success: true, coupon });
   } catch (error) {
     if (error instanceof EligibilityError) {

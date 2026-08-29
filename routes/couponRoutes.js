@@ -1,6 +1,6 @@
 import express from "express";
 import { body } from "express-validator";
-import { createCoupon, getMyCouponsHandler, getMyLimitsHandler, lookupCouponHandler, redeemCouponHandler } from "../controllers/couponController.js";
+import { createCoupon, getMyCouponsHandler, getMyLimitsHandler, lookupCouponHandler, redeemCouponHandler, cancelCouponHandler } from "../controllers/couponController.js";
 import { protect, authorize } from "../middleware/auth.js";
 import { ROLES } from "../utils/roles.js";
 import { PRODUCT_CATEGORIES } from "../models/InputSubsidyRule.js";
@@ -23,6 +23,7 @@ router.post(
   ],
   createCoupon
 );
+router.patch("/:id/cancel", authorize(ROLES.FARMER), cancelCouponHandler);
 
 // Dealer/officer-facing: look up and redeem a farmer's coupon at point of sale.
 router.get("/lookup/:code", authorize(ROLES.DEALER, ROLES.AGRI_OFFICER), lookupCouponHandler);

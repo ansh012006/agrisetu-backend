@@ -148,10 +148,15 @@ export const getMyLimits = async (farmerId) => {
     rulesByProduct.get(key).push(rule);
   }
 
+  // Keyed by product+category (not by a single specific rule id) - see
+  // below for why. Tracks the eligible quantity (from re-matching
+  // against each land today) alongside every ruleId that's ever been
+  // relevant for this product, so actual usage can be summed across
+  // all of them.
   const matched = new Map();
   for (const land of lands) {
     const landAreaAcres = toAcres(land.area.value, land.area.unit);
-    for (const [, rulesForProduct] of rulesByProduct) {
+    for (const [productKey, rulesForProduct] of rulesByProduct) {
       const criteria = {
         product: rulesForProduct[0].product,
         productCategory: rulesForProduct[0].productCategory,
@@ -163,11 +168,13 @@ export const getMyLimits = async (farmerId) => {
       const match = findApplicableRule(rulesForProduct, criteria);
       if (!match) continue;
 
-      const key = match._id.toString();
       const landEligible = computeEligibleQuantityForFarmer(match, landAreaAcres);
-      if (!matched.has(key)) matched.set(key, { rule: match, landNames: new Set(), eligibleQuantity: 0 });
-      const entry = matched.get(key);
+      if (!matched.has(productKey)) {
+        matched.set(productKey, { rule: match, landNames: new Set(), eligibleQuantity: 0, ruleIds: new Set() });
+      }
+      const entry = matched.get(productKey);
       entry.landNames.add(land.landName);
+      entry.ruleIds.add(match._id.toString());
       entry.eligibleQuantity =
         match.quantityMode === "per_area_rate" ? entry.eligibleQuantity + landEligible : Math.max(entry.eligibleQuantity, landEligible);
     }
@@ -175,16 +182,46 @@ export const getMyLimits = async (farmerId) => {
 
   if (matched.size === 0) return [];
 
-  const ruleIds = Array.from(matched.keys());
-  const counters = await RuleAllocationCounter.find({ farmer: farmerId, rule: { $in: ruleIds } }).lean();
+  // Usage is summed across EVERY rule id ever relevant for a product,
+  // not just whichever single rule re-matching against today's land
+  // data happens to pick. This is the actual fix: generateCoupon()
+  // resolves its crop from `crop || land.currentCrop` (the coupon
+  // form's own crop field can override the land's stored crop), while
+  // this function only ever had access to land.currentCrop - any time
+  // those two diverged, a coupon's usage was recorded against a
+  // different rule id than the one re-derived here, and a lookup keyed
+  // to a single ruleId would silently show 0 used despite real
+  // consumption. Summing across every ruleId that's ever matched this
+  // product for this farmer's rules closes that gap regardless of
+  // which specific rule any individual coupon was actually generated
+  // under.
+  const allProductRuleIds = new Set();
+  for (const entry of matched.values()) {
+    for (const id of entry.ruleIds) allProductRuleIds.add(id);
+  }
+  // Also include every rule id for each matched product (not just the
+  // ones that happened to match today), since a coupon could have been
+  // generated under a rule variant that no longer matches this land's
+  // current crop/state/district (e.g. the land's crop changed since).
+  for (const [productKey, entry] of matched) {
+    for (const rule of rulesByProduct.get(productKey) || []) {
+      allProductRuleIds.add(rule._id.toString());
+      entry.ruleIds.add(rule._id.toString());
+    }
+  }
+
+  const counters = await RuleAllocationCounter.find({
+    farmer: farmerId,
+    rule: { $in: Array.from(allProductRuleIds) },
+  }).lean();
   const counterByRule = new Map(counters.map((c) => [c.rule.toString(), c.totalAllocated]));
 
-  return ruleIds.map((ruleId) => {
-    const { rule, landNames, eligibleQuantity } = matched.get(ruleId);
-    const totalAllocated = counterByRule.get(ruleId) || 0;
+  return Array.from(matched.entries()).map(([, entry]) => {
+    const { rule, landNames, eligibleQuantity, ruleIds } = entry;
+    const totalAllocated = Array.from(ruleIds).reduce((sum, id) => sum + (counterByRule.get(id) || 0), 0);
     const remainingQuantity = Math.max(0, eligibleQuantity - totalAllocated);
     return {
-      ruleId,
+      ruleId: rule._id.toString(),
       product: rule.product,
       productCategory: rule.productCategory,
       unit: rule.maxAllowedQuantity.unit,
@@ -243,4 +280,41 @@ export const lookupCoupon = async (couponCode) => {
     throw new EligibilityError("No coupon found with that code.", 404, "COUPON_NOT_FOUND");
   }
   return coupon;
+};
+
+/**
+ * Lets a farmer discard a coupon they generated but haven't redeemed
+ * yet, crediting the allocated quantity back to their remaining quota -
+ * the exact mirror of reserveQuota() above. Only "active" coupons can
+ * be cancelled; a coupon a dealer has already redeemed represents real
+ * product handed over, so its quota is not refundable, and a coupon
+ * that's already cancelled or expired has nothing left to reverse.
+ */
+export const cancelCoupon = async (couponId, farmerId) => {
+  const coupon = await Coupon.findById(couponId);
+  if (!coupon) {
+    throw new EligibilityError("Coupon not found.", 404, "COUPON_NOT_FOUND");
+  }
+  if (coupon.farmer.toString() !== farmerId.toString()) {
+    throw new EligibilityError("You do not have access to this coupon.", 403, "FORBIDDEN");
+  }
+  if (coupon.status !== "active") {
+    throw new EligibilityError(`This coupon is "${coupon.status}" and can no longer be discarded.`, 400, "NOT_ACTIVE");
+  }
+
+  // Symmetric to reserveQuota()'s $inc: a negative increment credits
+  // the quantity back. No lower-bound guard is needed here the way
+  // reserveQuota() guards its upper bound - this coupon's own
+  // reservation is guaranteed to already be reflected in the counter
+  // (it was added when the coupon was created), so decrementing by
+  // that same amount can't drive the counter negative.
+  await RuleAllocationCounter.findOneAndUpdate(
+    { farmer: farmerId, rule: coupon.rule },
+    { $inc: { totalAllocated: -coupon.quantity.value } }
+  );
+
+  coupon.status = "cancelled";
+  await coupon.save();
+
+  return Coupon.findById(coupon._id).populate("land", "landName").populate("farmer", "name");
 };

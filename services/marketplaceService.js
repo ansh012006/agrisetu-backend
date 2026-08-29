@@ -124,11 +124,20 @@ export const placeOrder = async (buyerId, { listingId, quantityOrdered }) => {
 };
 
 export const getMyOrders = async (buyerId) => {
-  return Order.find({ buyer: buyerId }).sort({ createdAt: -1 }).populate("seller", "name");
+  // Populates BOTH buyer and seller, not just seller - the same lesson
+  // learned earlier for Listing/Machinery: Gson parses every field on
+  // the shared Order model during deserialization regardless of which
+  // one the UI actually displays, so an unpopulated ObjectId on EITHER
+  // field crashes parsing the whole list. This was missed here even
+  // after fixing it elsewhere, because it's easy to reason "the buyer
+  // viewing their own orders already knows they're the buyer" and
+  // conclude that field doesn't need populating - true for the UI,
+  // false for Gson.
+  return Order.find({ buyer: buyerId }).sort({ createdAt: -1 }).populate("seller", "name").populate("buyer", "name");
 };
 
 export const getReceivedOrders = async (sellerId) => {
-  return Order.find({ seller: sellerId }).sort({ createdAt: -1 }).populate("buyer", "name");
+  return Order.find({ seller: sellerId }).sort({ createdAt: -1 }).populate("buyer", "name").populate("seller", "name");
 };
 
 /**
@@ -160,5 +169,5 @@ export const updateOrderStatus = async (orderId, sellerId, newStatus) => {
 
   order.status = newStatus;
   await order.save();
-  return Order.findById(order._id).populate("buyer", "name");
+  return Order.findById(order._id).populate("buyer", "name").populate("seller", "name");
 };

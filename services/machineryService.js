@@ -137,11 +137,15 @@ export const createBooking = async (farmerId, { machineryId, startDate, endDate 
 };
 
 export const getMyBookings = async (farmerId) => {
-  return Booking.find({ farmer: farmerId }).sort({ createdAt: -1 }).populate("owner", "name");
+  // Same fix as getMyOrders/getReceivedOrders in marketplaceService.js:
+  // Android's shared Booking model expects both `owner` and `farmer` as
+  // populated objects regardless of which side is viewing, so both need
+  // populating here even though this is "the farmer's own bookings."
+  return Booking.find({ farmer: farmerId }).sort({ createdAt: -1 }).populate("owner", "name").populate("farmer", "name");
 };
 
 export const getReceivedBookings = async (ownerId) => {
-  return Booking.find({ owner: ownerId }).sort({ createdAt: -1 }).populate("farmer", "name");
+  return Booking.find({ owner: ownerId }).sort({ createdAt: -1 }).populate("farmer", "name").populate("owner", "name");
 };
 
 export const updateBookingStatus = async (bookingId, ownerId, newStatus) => {
@@ -160,5 +164,5 @@ export const updateBookingStatus = async (bookingId, ownerId, newStatus) => {
 
   booking.status = newStatus;
   await booking.save();
-  return Booking.findById(booking._id).populate("farmer", "name");
+  return Booking.findById(booking._id).populate("farmer", "name").populate("owner", "name");
 };
