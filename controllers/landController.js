@@ -35,3 +35,47 @@ export const createLand = async (req, res, next) => {
     next(error);
   }
 };
+
+// @route   PATCH /api/lands/:id
+export const updateLand = async (req, res, next) => {
+  try {
+    const land = await Land.findById(req.params.id);
+    if (!land) return res.status(404).json({ success: false, message: "Land not found." });
+    if (land.farmer.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "You do not have access to this land." });
+    }
+
+    const { landName, areaValue, areaUnit, state, district, village, soilType, currentCrop, ownershipStatus, irrigationAvailable } = req.body;
+
+    if (landName !== undefined) land.landName = landName;
+    if (areaValue !== undefined) land.area.value = Number(areaValue);
+    if (areaUnit !== undefined) land.area.unit = areaUnit;
+    if (state !== undefined) land.location.state = state;
+    if (district !== undefined) land.location.district = district;
+    if (village !== undefined) land.location.village = village;
+    if (soilType !== undefined) land.soilType = soilType;
+    if (currentCrop !== undefined) land.currentCrop = currentCrop;
+    if (ownershipStatus !== undefined) land.ownershipStatus = ownershipStatus;
+    if (irrigationAvailable !== undefined) land.irrigationAvailable = irrigationAvailable === true || irrigationAvailable === "true";
+
+    await land.save();
+    res.status(200).json({ success: true, land });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @route   DELETE /api/lands/:id
+export const deleteLand = async (req, res, next) => {
+  try {
+    const land = await Land.findById(req.params.id);
+    if (!land) return res.status(404).json({ success: false, message: "Land not found." });
+    if (land.farmer.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "You do not have access to this land." });
+    }
+    await land.deleteOne();
+    res.status(200).json({ success: true, message: "Land removed." });
+  } catch (error) {
+    next(error);
+  }
+};

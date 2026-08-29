@@ -21,6 +21,17 @@ const RULES = [
   { crop: "Sugarcane", product: "Urea", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.11, notes: "~250 kg N/ha for sugarcane (~9 bags Urea/ha)." },
   { crop: "Maize", product: "Urea", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.2, notes: "~120 kg N/ha for maize (~5 bags Urea/ha)." },
   { crop: "Potato", product: "Urea", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.15, notes: "~180 kg N/ha for potato (~6.5 bags Urea/ha)." },
+  // Wildcard-crop (crop: "") fallback rules - the engine already
+  // supports these (ruleMatchesCriteria treats an empty crop as
+  // matching any crop) but no seed data ever used one, so a farmer
+  // growing anything other than these 6 specific crops got a hard
+  // "no rule exists" rejection even for a completely standard product
+  // like Urea. pickMostSpecificRule() already prefers a crop-specific
+  // rule over a wildcard one whenever both match, so these only ever
+  // kick in as a genuine fallback, never override the rates above.
+  { crop: "", product: "Urea", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.2, notes: "General average N application rate (~120 kg N/ha) for crops without a specific rule on file." },
+  { crop: "", product: "DAP", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.4, notes: "General average P2O5 application rate (~60 kg P2O5/ha) for crops without a specific rule on file." },
+  { crop: "", product: "MOP", productCategory: "fertilizer", quantityValue: 1, areaValue: 0.5, notes: "General average K2O application rate (~50 kg K2O/ha) - MOP had no rule at all before this." },
 ];
 
 const run = async () => {
