@@ -4,6 +4,7 @@ import {
   browseMachinery,
   getMyMachinery,
   deactivateMachinery,
+  updateMachinery,
   createBooking,
   getMyBookings,
   getReceivedBookings,
@@ -56,6 +57,16 @@ export const getMyMachineryHandler = async (req, res, next) => {
 export const deactivateMachineryHandler = async (req, res, next) => {
   try {
     const machinery = await deactivateMachinery(req.params.id, req.user._id);
+    res.status(200).json({ success: true, machinery });
+  } catch (error) {
+    handleMachineryError(error, res, next);
+  }
+};
+
+// @route   PATCH /api/machinery/:id
+export const updateMachineryHandler = async (req, res, next) => {
+  try {
+    const machinery = await updateMachinery(req.params.id, req.user._id, req.body);
     res.status(200).json({ success: true, machinery });
   } catch (error) {
     handleMachineryError(error, res, next);

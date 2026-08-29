@@ -4,6 +4,7 @@ import {
   browseListings,
   getMyListings,
   deactivateListing,
+  updateListing,
   placeOrder,
   getMyOrders,
   getReceivedOrders,
@@ -57,6 +58,16 @@ export const getMyListingsHandler = async (req, res, next) => {
 export const deactivateListingHandler = async (req, res, next) => {
   try {
     const listing = await deactivateListing(req.params.id, req.user._id);
+    res.status(200).json({ success: true, listing });
+  } catch (error) {
+    handleMarketplaceError(error, res, next);
+  }
+};
+
+// @route   PATCH /api/marketplace/listings/:id
+export const updateListingHandler = async (req, res, next) => {
+  try {
+    const listing = await updateListing(req.params.id, req.user._id, req.body);
     res.status(200).json({ success: true, listing });
   } catch (error) {
     handleMarketplaceError(error, res, next);

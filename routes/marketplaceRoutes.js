@@ -5,6 +5,7 @@ import {
   browseListingsHandler,
   getMyListingsHandler,
   deactivateListingHandler,
+  updateListingHandler,
   placeOrderHandler,
   getMyOrdersHandler,
   getReceivedOrdersHandler,
@@ -48,6 +49,7 @@ router.post(
   createListingHandler
 );
 router.patch("/listings/:id/deactivate", authorize(ROLES.FARMER), deactivateListingHandler);
+router.patch("/listings/:id", authorize(ROLES.FARMER), updateListingHandler);
 router.get("/orders/received", authorize(ROLES.FARMER), getReceivedOrdersHandler);
 router.patch("/orders/:id/status", authorize(ROLES.FARMER), updateOrderStatusHandler);
 

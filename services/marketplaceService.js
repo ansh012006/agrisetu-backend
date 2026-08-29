@@ -64,6 +64,25 @@ export const deactivateListing = async (listingId, sellerId) => {
   return Listing.findById(listing._id).populate("seller", "name location");
 };
 
+export const updateListing = async (listingId, sellerId, data) => {
+  const listing = await Listing.findById(listingId);
+  if (!listing) throw new MarketplaceError("Listing not found.", 404, "LISTING_NOT_FOUND");
+  if (listing.seller.toString() !== sellerId.toString()) {
+    throw new MarketplaceError("You do not have access to this listing.", 403, "FORBIDDEN");
+  }
+
+  const { productName, category, quantityAvailable, unit, pricePerUnit, description } = data;
+  if (productName !== undefined) listing.productName = productName;
+  if (category !== undefined) listing.category = category;
+  if (quantityAvailable !== undefined) listing.quantityAvailable = quantityAvailable;
+  if (unit !== undefined) listing.unit = unit;
+  if (pricePerUnit !== undefined) listing.pricePerUnit = pricePerUnit;
+  if (description !== undefined) listing.description = description;
+
+  await listing.save();
+  return Listing.findById(listing._id).populate("seller", "name location");
+};
+
 /**
  * The atomic guard: a single findOneAndUpdate with the stock check
  * built into its own filter, so MongoDB serializes concurrent orders

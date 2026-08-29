@@ -5,6 +5,7 @@ import {
   browseMachineryHandler,
   getMyMachineryHandler,
   deactivateMachineryHandler,
+  updateMachineryHandler,
   createBookingHandler,
   getMyBookingsHandler,
   getReceivedBookingsHandler,
@@ -45,6 +46,7 @@ router.post(
   createMachineryHandler
 );
 router.patch("/:id/deactivate", authorize(ROLES.MACHINERY_OWNER), deactivateMachineryHandler);
+router.patch("/:id", authorize(ROLES.MACHINERY_OWNER), updateMachineryHandler);
 router.get("/bookings/received", authorize(ROLES.MACHINERY_OWNER), getReceivedBookingsHandler);
 router.patch("/bookings/:id/status", authorize(ROLES.MACHINERY_OWNER), updateBookingStatusHandler);
 

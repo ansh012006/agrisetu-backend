@@ -58,6 +58,25 @@ export const deactivateMachinery = async (machineryId, ownerId) => {
   return Machinery.findById(machinery._id).populate("owner", "name location");
 };
 
+export const updateMachinery = async (machineryId, ownerId, data) => {
+  const machinery = await Machinery.findById(machineryId);
+  if (!machinery) throw new MachineryError("Machinery not found.", 404, "MACHINERY_NOT_FOUND");
+  if (machinery.owner.toString() !== ownerId.toString()) {
+    throw new MachineryError("You do not have access to this listing.", 403, "FORBIDDEN");
+  }
+
+  const { name, category, rentPricePerDay, description, state, district } = data;
+  if (name !== undefined) machinery.name = name;
+  if (category !== undefined) machinery.category = category;
+  if (rentPricePerDay !== undefined) machinery.rentPricePerDay = rentPricePerDay;
+  if (description !== undefined) machinery.description = description;
+  if (state !== undefined) machinery.location.state = state;
+  if (district !== undefined) machinery.location.district = district;
+
+  await machinery.save();
+  return Machinery.findById(machinery._id).populate("owner", "name location");
+};
+
 const datesOverlap = async (machineryId, startDate, endDate, excludeBookingId = null) => {
   const query = {
     machinery: machineryId,
