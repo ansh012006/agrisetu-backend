@@ -30,10 +30,19 @@ export const getWeather = async (req, res, next) => {
     try {
       response = await withTimeout(fetch(url), TIMEOUT_MS);
     } catch (err) {
+      console.error("[Weather] Could not reach Open-Meteo:", err?.message || err);
       return res.status(502).json({ success: false, message: "Could not reach the weather service." });
     }
 
     if (!response.ok) {
+      // Logged here specifically because the generic message shown to
+      // the user doesn't say WHY Open-Meteo rejected the request - a
+      // real HTTP status plus its response body (Open-Meteo returns a
+      // JSON {error, reason} on bad requests) is the difference between
+      // guessing and actually knowing what went wrong next time this
+      // happens. Check Render's Logs tab for this line.
+      const errorBody = await response.text().catch(() => "");
+      console.error(`[Weather] Open-Meteo returned ${response.status}: ${errorBody.slice(0, 500)}`);
       return res.status(502).json({ success: false, message: "The weather service returned an error." });
     }
 
