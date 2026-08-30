@@ -22,7 +22,7 @@ export const getWeather = async (req, res, next) => {
 
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-      `&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m` +
+      `&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,cloud_cover` +
       `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max` +
       `&timezone=auto&forecast_days=6`;
 
@@ -64,6 +64,16 @@ export const getWeather = async (req, res, next) => {
       });
     }
 
+    // A single, simple category the client uses to pick an animation -
+    // deliberately just these 4 buckets rather than exhaustively
+    // mapping Open-Meteo's full weather-code list, since that's more
+    // precision than a "what animation should I show" decision needs.
+    const cloudCover = current.cloud_cover ?? 0;
+    let condition = "sunny";
+    if (current.precipitation > 0) condition = "rainy";
+    else if (cloudCover > 60) condition = "cloudy";
+    else if (cloudCover > 20) condition = "partly_cloudy";
+
     res.status(200).json({
       success: true,
       weather: {
@@ -72,6 +82,7 @@ export const getWeather = async (req, res, next) => {
         windSpeed: current.wind_speed_10m ?? null,
         precipitation: current.precipitation ?? null,
         description: current.precipitation > 0 ? "Rainy" : "Clear",
+        condition,
         locationName: `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`,
         forecast,
       },
