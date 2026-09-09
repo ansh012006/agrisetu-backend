@@ -11,6 +11,17 @@ export class GeminiServiceError extends Error {
 
 let genAI = null;
 
+// ponytail: allowlist so a bad GEMINI_MODEL env (e.g. gemini-3.6-flash) falls back instead of 404ing
+const KNOWN_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"];
+const DEFAULT_MODEL = "gemini-2.0-flash";
+
+function resolveModel(explicit) {
+  const name = explicit || process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  if (KNOWN_MODELS.includes(name)) return name;
+  console.warn(`[Gemini] Unknown model "${name}", falling back to ${DEFAULT_MODEL}.`);
+  return DEFAULT_MODEL;
+}
+
 function getClient() {
   if (!genAI) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -38,7 +49,7 @@ function mapGeminiError(err, fallbackCode = "ANALYSIS_ERROR") {
 export async function callGemini(prompt, options = {}) {
   try {
   const client = getClient();
-  const modelName = options.model || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const modelName = resolveModel(options.model);
   const model = client.getGenerativeModel({ model: modelName });
 
   const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "30000");
@@ -74,7 +85,7 @@ export async function analyzeCropImage({ buffer, mimeType }) {
 
   try {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.0-flash" });
+  const model = client.getGenerativeModel({ model: resolveModel() });
 
   const result = await Promise.race([
   model.generateContent([prompt, imagePart]),
