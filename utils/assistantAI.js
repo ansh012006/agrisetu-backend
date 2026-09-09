@@ -24,7 +24,8 @@ ${context ? `Farmer context:\n${context}\n` : ""}Farmer's question: ${question}
 Provide a helpful, concise answer (2-4 sentences):`;
 
   try {
-  const answer = await callGemini(prompt);
+  // ponytail: lite model for short chat answers (3.8 reasons slowly); vision keeps full model
+  const answer = await callGemini(prompt, { model: process.env.GEMINI_CHAT_MODEL || "gemini-3.1-flash-lite" });
   return answer;
   } catch (err) {
   throw err;

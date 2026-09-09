@@ -92,7 +92,7 @@ export async function analyzeCropImage({ buffer, mimeType }) {
   const result = await Promise.race([
   model.generateContent([prompt, imagePart]),
   new Promise((_, reject) =>
-  setTimeout(() => reject(new GeminiServiceError("Analysis timed out.", 504, "TIMEOUT")), 30000)
+  setTimeout(() => reject(new GeminiServiceError("Analysis timed out.", 504, "TIMEOUT")), parseInt(process.env.GEMINI_VISION_TIMEOUT_MS || "60000"))
   ),
   ]);
 

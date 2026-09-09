@@ -148,17 +148,20 @@ export async function getMyLimits(farmerId) {
   farmer: farmerId,
   createdAt: { $gte: startOfMonth },
   });
-  // Android expects limits: List<SubsidyLimit>; also keep old counters for compat
-  const rules = await InputSubsidyRule.find({ isActive: true }).limit(20).lean();
+  // Android expects limits: List<SubsidyLimit>; group by product so 22 rules don't render as 22 rows
+  const rules = await InputSubsidyRule.find({ isActive: true }).limit(50).lean();
   const lands = await Land.find({ farmer: farmerId }).lean();
   const landIds = lands.map((l) => l._id.toString());
   const totalArea = lands.reduce((s, l) => s + (Number(l.area?.value) || 0), 0) || 1;
   const coupons = await Coupon.find({ farmer: farmerId, createdAt: { $gte: startOfMonth } }).lean();
-  const limits = rules.map((r) => {
+  const byProduct = new Map();
+  for (const r of rules) {
+  const key = `${r.product}||${r.productCategory}||${r.maxAllowedQuantity?.unit || "bag"}`;
   const eligible = computeQuantity(r, totalArea);
   const allocated = coupons.filter((c) => c.productCategory === r.productCategory).reduce((s, c) => s + (Number(c.quantityValue) || 0), 0);
-  const remainingQty = Math.max(0, eligible - allocated);
-  return {
+  const cur = byProduct.get(key);
+  if (!cur || eligible > cur.eligibleQuantity) {
+  byProduct.set(key, {
   ruleId: r._id.toString(),
   product: r.product,
   productCategory: r.productCategory,
@@ -166,11 +169,13 @@ export async function getMyLimits(farmerId) {
   quantityMode: r.quantityMode === "fixed" ? "flat" : r.quantityMode,
   eligibleQuantity: eligible,
   totalAllocated: allocated,
-  remainingQuantity: remainingQty,
+  remainingQuantity: Math.max(0, eligible - allocated),
   usedPercent: eligible > 0 ? Math.round((allocated / eligible) * 100) : 0,
   applicableLands: landIds,
-  };
   });
+  }
+  }
+  const limits = [...byProduct.values()].sort((a, b) => a.product.localeCompare(b.product));
   return { monthlyUsed, monthlyLimit: 5, remaining: 5 - monthlyUsed, limits };
 }
 
