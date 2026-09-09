@@ -13,7 +13,7 @@ let genAI = null;
 
 // ponytail: only remap known-shutdown models; pass anything else through so future models keep working
 const DEAD_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.0-pro"];
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.8-flash";
 
 function resolveModel(explicit) {
   const name = explicit || process.env.GEMINI_MODEL || DEFAULT_MODEL;
@@ -38,7 +38,7 @@ function mapGeminiError(err, fallbackCode = "ANALYSIS_ERROR") {
   if (err instanceof GeminiServiceError) return err;
   const msg = err?.message || String(err);
   if (/404|not found|unknown model|is not found/i.test(msg))
-  return new GeminiServiceError(`Gemini model not found. Set GEMINI_MODEL to a live model (e.g. gemini-2.5-flash or gemini-3.6-flash). Details: ${msg.slice(0, 200)}`, 502, "MODEL_NOT_FOUND");
+  return new GeminiServiceError(`Gemini model not found. Set GEMINI_MODEL to a live model (e.g. gemini-3.8-flash). Details: ${msg.slice(0, 200)}`, 502, "MODEL_NOT_FOUND");
   if (/400|invalid.*key|API key|API_KEY/i.test(msg))
   return new GeminiServiceError(`Invalid Gemini API key. Get one from Google AI Studio (starts with AIza). Details: ${msg.slice(0, 200)}`, 502, "INVALID_API_KEY");
   if (/429|quota|rate limit|exhausted/i.test(msg))
