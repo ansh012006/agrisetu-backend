@@ -1,112 +1,97 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export class GeminiServiceError extends Error {
-  constructor(message, statusCode, code) {
-    super(message);
-    this.name = "GeminiServiceError";
-    this.statusCode = statusCode;
-    this.code = code;
-  }
+ constructor(message, statusCode = 500, code = "GEMINI_ERROR") {
+ super(message);
+ this.statusCode = statusCode;
+ this.code = code;
+ this.name = "GeminiServiceError";
+ }
 }
 
-const TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 30000;
+let genAI = null;
 
-const responseSchema = {
-  type: SchemaType.OBJECT,
-  properties: {
-    cropName: { type: SchemaType.STRING },
-    diseaseName: { type: SchemaType.STRING },
-    isHealthy: { type: SchemaType.BOOLEAN },
-    confidence: { type: SchemaType.NUMBER },
-    severity: { type: SchemaType.STRING, enum: ["healthy", "mild", "moderate", "severe", "critical"] },
-    symptoms: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    possibleCauses: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    treatment: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    recommendedPesticide: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    recommendedFertilizer: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    organicTreatment: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-    preventiveMeasures: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-  },
-  required: ["cropName", "diseaseName", "isHealthy", "confidence", "severity"],
-};
+function getClient() {
+ if (!genAI) {
+ const apiKey = process.env.GEMINI_API_KEY;
+ if (!apiKey) throw new GeminiServiceError("GEMINI_API_KEY is not set.", 500, "MISSING_API_KEY");
+ genAI = new GoogleGenerativeAI(apiKey);
+ }
+ return genAI;
+}
 
-const PROMPT = `You are an agricultural expert analyzing a crop/leaf photo for a farmer.
-Identify the crop, whether it shows disease/pest damage or is healthy, and if diseased,
-the specific disease, your confidence (0-100), severity, visible symptoms, likely causes,
-treatment steps, recommended pesticide/fertilizer categories (never exact spray
-concentrations - always defer to the product label and a local expert), organic
-alternatives, and preventive measures. If the image is unclear or not a plant, set
-confidence low and explain in diseaseName.`;
+export async function callGemini(prompt, options = {}) {
+ const client = getClient();
+ const modelName = options.model || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+ const model = client.getGenerativeModel({ model: modelName });
 
-const withTimeout = (promise, ms) =>
-  Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new GeminiServiceError("The AI service took too long to respond. Please try again.", 504, "TIMEOUT")), ms)
-    ),
+ const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "30000");
+
+ const result = await Promise.race([
+ model.generateContent(prompt),
+ new Promise((_, reject) =>
+ setTimeout(() => reject(new GeminiServiceError("Gemini request timed out.", 504, "TIMEOUT")), timeoutMs)
+ ),
+ ]);
+
+ const response = await result.response;
+ const text = response.text();
+
+ if (!text || text.trim().length === 0) {
+ throw new GeminiServiceError("Gemini returned an empty response.", 502, "EMPTY_RESPONSE");
+ }
+
+ return text.trim();
+}
+
+export async function analyzeCropImage({ buffer, mimeType }) {
+  if (!buffer) throw new GeminiServiceError("Image buffer is required.", 400, "MISSING_IMAGE");
+
+  // ponytail: rich shape matches Android DiseaseAnalysis, old fields kept for compat
+  const prompt = `You are an expert agricultural AI. Analyze this crop image and respond ONLY with valid JSON in this exact format (no markdown, no extra text):
+  {"cropName":"crop name","diseaseName":"disease name or Healthy","isHealthy":false,"confidence":0-100,"severity":"healthy|mild|moderate|severe|critical","symptoms":["s1"],"possibleCauses":["c1"],"treatment":["t1"],"recommendedPesticide":["p1"],"recommendedFertilizer":["f1"],"organicTreatment":["o1"],"preventiveMeasures":["m1"],"description":"brief description","cropsAffected":["crop1"]}`;
+
+  const imagePart = { inlineData: { mimeType: mimeType || "image/jpeg", data: buffer.toString("base64") } };
+
+  try {
+  const client = getClient();
+  const model = client.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-2.0-flash" });
+
+  const result = await Promise.race([
+  model.generateContent([prompt, imagePart]),
+  new Promise((_, reject) =>
+  setTimeout(() => reject(new GeminiServiceError("Analysis timed out.", 504, "TIMEOUT")), 30000)
+  ),
   ]);
 
-export const analyzeCropImage = async ({ buffer, mimeType }) => {
-  // .trim() guards against a stray trailing space/newline from
-  // copy-pasting the key into .env, which would otherwise be sent to
-  // Google as part of the key and rejected as "invalid".
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new GeminiServiceError("AI disease analysis is not configured on the server (missing GEMINI_API_KEY).", 503, "NOT_CONFIGURED");
-  }
+  const text = (await result.response).text();
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new GeminiServiceError("Could not parse analysis result.", 502, "PARSE_ERROR");
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || "gemini-3.6-flash",
-    generationConfig: { responseMimeType: "application/json", responseSchema },
-  });
-
-  let result;
-  try {
-    result = await withTimeout(
-      model.generateContent([
-        PROMPT,
-        { inlineData: { data: buffer.toString("base64"), mimeType } },
-      ]),
-      TIMEOUT_MS
-    );
-  } catch (err) {
-    if (err instanceof GeminiServiceError) throw err;
-
-    const status = err?.status ?? err?.response?.status ?? err?.cause?.status;
-    if (status === 429) {
-      throw new GeminiServiceError("The AI service is receiving too many requests right now. Please try again in a moment.", 429, "RATE_LIMITED");
-    }
-    if (status === 401 || status === 403) {
-      throw new GeminiServiceError("The AI service rejected the request. The API key may be invalid or lack permission.", 502, "AUTH_FAILED");
-    }
-    // Logged here specifically because this is the one branch where the
-    // real cause was previously discarded entirely - every other branch
-    // above at least tells you it was a genuine 429/401/403 from
-    // Google's servers, but this catch-all could be anything (DNS
-    // failure, TLS error, Render's own outbound network issue, etc.)
-    // and the generic message shown to the user doesn't distinguish
-    // between them. Check Render's Logs tab for this line when this
-    // error occurs.
-    console.error("[Gemini] Unclassified error reaching the AI service:", err?.message || err, err?.cause || "");
-    throw new GeminiServiceError("Could not reach the AI service. Please check your network connection and try again.", 502, "NETWORK_ERROR");
-  }
-
-  let parsed;
-  try {
-    const text = result.response.text();
-    parsed = JSON.parse(text);
-  } catch (err) {
-    throw new GeminiServiceError("The AI service returned an unexpected response. Please try again.", 502, "INVALID_RESPONSE");
-  }
-
-  if (!parsed.cropName || !parsed.diseaseName || typeof parsed.confidence !== "number") {
-    throw new GeminiServiceError("The AI response was incomplete. Please try again with a clearer photo.", 502, "INCOMPLETE_RESPONSE");
-  }
-
+  const data = JSON.parse(jsonMatch[0]);
+  const arr = (v) => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : []);
+  const isHealthy = data.isHealthy === true || String(data.diseaseName || "").toLowerCase() === "healthy";
+  let severity = String(data.severity || "").toLowerCase();
+  if (!["healthy", "mild", "moderate", "severe", "critical", "low", "medium", "high"].includes(severity)) severity = isHealthy ? "healthy" : "moderate";
+  const treatmentArr = arr(data.treatment);
   return {
-    ...parsed,
-    confidence: Math.max(0, Math.min(100, parsed.confidence)),
-    modelUsed: process.env.GEMINI_MODEL || "gemini-3.6-flash",
+  cropName: data.cropName || "",
+  diseaseName: data.diseaseName || "Unknown",
+  isHealthy,
+  confidence: Math.min(100, Math.max(0, Number(data.confidence) || 0)),
+  description: data.description || "",
+  treatment: treatmentArr.length === 1 && typeof data.treatment === "string" ? data.treatment : treatmentArr,
+  severity,
+  symptoms: arr(data.symptoms),
+  possibleCauses: arr(data.possibleCauses),
+  recommendedPesticide: arr(data.recommendedPesticide),
+  recommendedFertilizer: arr(data.recommendedFertilizer),
+  organicTreatment: arr(data.organicTreatment),
+  preventiveMeasures: arr(data.preventiveMeasures),
+  cropsAffected: Array.isArray(data.cropsAffected) ? data.cropsAffected : [],
   };
-};
+  } catch (err) {
+  if (err instanceof GeminiServiceError) throw err;
+  throw new GeminiServiceError("Image analysis failed: " + err.message, 502, "ANALYSIS_ERROR");
+  }
+}

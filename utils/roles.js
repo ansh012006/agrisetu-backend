@@ -1,20 +1,29 @@
 export const ROLES = {
   FARMER: "farmer",
-  BUYER: "buyer",
   DEALER: "dealer",
-  MACHINERY_OWNER: "machinery_owner",
   AGRI_OFFICER: "agri_officer",
   ADMIN: "admin",
+  BUYER: "buyer",
+  MACHINERY_OWNER: "machinery_owner",
 };
 
-export const ALL_ROLES = Object.values(ROLES);
+// ponytail: buyer/machinery_owner are farmer-equivalent for auth; add when real RBAC needed
+export const PUBLIC_REGISTERABLE_ROLES = [ROLES.FARMER, ROLES.DEALER, ROLES.BUYER, ROLES.MACHINERY_OWNER];
 
-// Matches the Android app's Register screen exactly - admin and
-// agri_officer are provisioned only via seed/seedAdmin.js, never through
-// public self-registration.
-export const PUBLIC_REGISTERABLE_ROLES = [
-  ROLES.FARMER,
-  ROLES.BUYER,
-  ROLES.DEALER,
-  ROLES.MACHINERY_OWNER,
-];
+export const DEALER_OR_OFFICER = [ROLES.DEALER, ROLES.AGRI_OFFICER];
+
+export const FARMER_LIKE = [ROLES.FARMER, ROLES.BUYER, ROLES.MACHINERY_OWNER];
+
+export const AUTH_ROLES = [ROLES.FARMER, ROLES.DEALER, ROLES.AGRI_OFFICER, ROLES.ADMIN, ROLES.BUYER, ROLES.MACHINERY_OWNER];
+
+export const authorize = (...allowedRoles) => {
+ return (req, res, next) => {
+ if (!req.user) {
+ return res.status(401).json({ success: false, message: "Not authenticated." });
+ }
+ if (!allowedRoles.includes(req.user.role)) {
+ return res.status(403).json({ success: false, message: "Not authorized to access this resource." });
+ }
+ next();
+ };
+};

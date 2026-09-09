@@ -1,48 +1,42 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { ALL_ROLES } from "../utils/roles.js";
 
 const userSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password: { type: String, required: true, minlength: 8, select: false },
-    role: { type: String, enum: ALL_ROLES, required: true },
-    phone: { type: String, trim: true, default: "" },
-    location: {
-      state: { type: String, trim: true, default: "" },
-      district: { type: String, trim: true, default: "" },
-    },
-    isActive: { type: Boolean, default: true },
+ {
+ name: { type: String, required: true },
+ email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+ password: { type: String, required: true, select: false },
+  role: {
+  type: String,
+  enum: ["farmer", "dealer", "agri_officer", "admin", "buyer", "machinery_owner"],
+  required: true,
+  default: "farmer",
   },
-  { timestamps: true }
+ phone: { type: String, default: "" },
+ location: {
+ state: { type: String, default: "" },
+ district: { type: String, default: "" },
+ },
+ isActive: { type: Boolean, default: true },
+ },
+ { timestamps: true }
 );
 
-userSchema.pre("save", async function hashPassword(next) {
-  if (!this.isModified("password")) return next();
-  const salt = await bcrypt.genSalt(12);
-  this.password = await bcrypt.hash(this.password, salt);
-  next();
+userSchema.pre("save", async function (next) {
+ if (!this.isModified("password")) return next();
+ this.password = await bcrypt.hash(this.password, 12);
+ next();
 });
 
-userSchema.methods.comparePassword = async function comparePassword(candidate) {
-  return bcrypt.compare(candidate, this.password);
+userSchema.methods.comparePassword = async function (candidate) {
+ return await bcrypt.compare(candidate, this.password);
 };
 
-userSchema.methods.toSafeObject = function toSafeObject() {
-  return {
-    _id: this._id,
-    name: this.name,
-    email: this.email,
-    role: this.role,
-    phone: this.phone,
-    location: this.location,
-    isActive: this.isActive,
-  };
+userSchema.methods.toSafeObject = function () {
+ const obj = this.toObject();
+ delete obj.password;
+ delete obj.__v;
+ return obj;
 };
 
-userSchema.index({ role: 1 });
-
-const User = mongoose.model("User", userSchema);
-
-export default User;
+export default mongoose.model("User", userSchema);

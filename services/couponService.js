@@ -1,320 +1,204 @@
 import Coupon from "../models/Coupon.js";
 import Land from "../models/Land.js";
 import InputSubsidyRule from "../models/InputSubsidyRule.js";
-import RuleAllocationCounter from "../models/RuleAllocationCounter.js";
-import { findApplicableRule, computeEligibleQuantityForFarmer } from "../utils/inputRuleEngine.js";
-import { toAcres } from "../utils/farmConstants.js";
+import { ApiError } from "../utils/apiHelpers.js";
+import mongoose from "mongoose";
 
-export class EligibilityError extends Error {
-  constructor(message, statusCode, code) {
-    super(message);
-    this.name = "EligibilityError";
-    this.statusCode = statusCode;
-    this.code = code;
-  }
+export class EligibilityError extends ApiError {
+ constructor(message, statusCode = 400, code = "ELIGIBILITY_ERROR") {
+ super(message, statusCode, code);
+ this.name = "EligibilityError";
+ }
 }
 
-/**
- * The atomic guard: a single findOneAndUpdate with the quota check
- * built into its filter is what makes this safe under concurrent
- * requests - MongoDB serializes writes to the same document, so a
- * second concurrent request's filter is evaluated against the
- * already-updated counter from the first, and correctly fails if
- * there's no longer enough room. No application-level locking needed.
- */
-const reserveQuota = async (farmerId, rule, quantityValue, landAreaAcres) => {
-  if (!quantityValue || quantityValue <= 0) {
-    throw new EligibilityError("Quantity must be a positive number.", 400, "INVALID_QUANTITY");
+function generateCode() {
+ const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+ let code = "AG-";
+ for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+ return code;
+}
+
+async function findMatchingRule(landId, product, productCategory, crop) {
+ const land = await Land.findById(landId).lean();
+ if (!land) throw new EligibilityError("Land not found.", 404, "LAND_NOT_FOUND");
+
+ const rules = await InputSubsidyRule.find({
+ crop: { $in: [crop || "", ""] },
+ product,
+ productCategory,
+ isActive: true,
+ effectiveFrom: { $lte: new Date() },
+ $or: [{ effectiveTo: null }, { effectiveTo: { $gte: new Date() } }],
+ }).lean();
+
+ if (rules.length === 0) {
+ throw new EligibilityError("No subsidy rule found for this product and crop combination.", 400, "NO_RULE");
+ }
+
+ const landArea = land.area?.value || 0;
+ const landUnit = land.area?.unit || "acre";
+
+ let best = null;
+ let bestScore = -1;
+ for (const rule of rules) {
+ let score = 0;
+ if (rule.crop && rule.crop === crop) score += 2;
+ else if (!rule.crop) score += 0;
+ const areaRange = rule.landAreaRange || {};
+ if (areaRange.max === null || (landArea >= (areaRange.min || 0) && (areaRange.max === null || landArea <= areaRange.max))) score += 1;
+ if (score > bestScore) { bestScore = score; best = rule; }
+ }
+
+ if (!best) throw new EligibilityError("No applicable subsidy rule for your land area.", 400, "NO_APPLICABLE_RULE");
+ return { land, rule: best };
+}
+
+function computeQuantity(rule, landArea) {
+  if (rule.quantityMode === "per_area_rate" && rule.perAreaRate) {
+  const rate = rule.perAreaRate;
+  return Math.ceil((landArea * rate.quantityValue) / rate.areaValue);
   }
-  if (rule.quantityMode === "per_area_rate" && (typeof landAreaAcres !== "number" || landAreaAcres <= 0)) {
-    throw new EligibilityError("This rule's entitlement is calculated from land size, but no valid land area was provided.", 400, "MISSING_LAND_AREA");
-  }
+  return rule.maxAllowedQuantity?.value || 1;
+}
 
-  const maxAllowed = computeEligibleQuantityForFarmer(rule, landAreaAcres);
-
-  try {
-    await RuleAllocationCounter.findOneAndUpdate(
-      { farmer: farmerId, rule: rule._id },
-      { $setOnInsert: { farmer: farmerId, rule: rule._id, totalAllocated: 0 } },
-      { upsert: true }
-    );
-  } catch (err) {
-    if (err.code !== 11000) throw err;
-  }
-
-  const updatedCounter = await RuleAllocationCounter.findOneAndUpdate(
-    { farmer: farmerId, rule: rule._id, totalAllocated: { $lte: maxAllowed - quantityValue } },
-    { $inc: { totalAllocated: quantityValue } },
-    { new: true }
-  );
-
-  if (!updatedCounter) {
-    const current = await RuleAllocationCounter.findOne({ farmer: farmerId, rule: rule._id }).lean();
-    const remaining = Math.max(0, maxAllowed - (current?.totalAllocated || 0));
-    throw new EligibilityError(
-      `Insufficient remaining quota. Requested ${quantityValue}, but only ${remaining} ${rule.maxAllowedQuantity.unit}(s) remain.`,
-      409,
-      "INSUFFICIENT_QUOTA"
-    );
-  }
-
-  return { maxAllowed, updatedCounter };
+// ponytail: dual shape (code+couponCode, quantityValue+quantity) for Android compat
+const toCouponDTO = (c) => {
+  if (!c) return c;
+  const o = { ...c };
+  o.couponCode = o.code || o.couponCode || "";
+  o.code = o.couponCode;
+  const qtyVal = o.quantityValue ?? o.quantity?.value ?? 1;
+  const qtyUnit = o.quantity?.unit || "bag";
+  o.quantityValue = Number(qtyVal);
+  o.quantity = { value: Number(qtyVal), unit: qtyUnit };
+  o.expiresAt = o.expiresAt || null;
+  if (o.land && typeof o.land === "object" && o.land.landName) o.land = { landName: o.land.landName };
+  else if (typeof o.land === "string") o.land = { landName: "" };
+  else if (!o.land) o.land = null;
+  if (o.farmer && typeof o.farmer === "object" && (o.farmer.name || o.farmer._id)) o.farmer = { name: o.farmer.name || "" };
+  else if (!o.farmer || typeof o.farmer === "string") o.farmer = o.farmer && typeof o.farmer === "object" ? o.farmer : null;
+  return o;
 };
 
-export const generateCoupon = async ({ farmerId, landId, product, productCategory, quantityValue, crop }) => {
-  const land = await Land.findById(landId);
-  if (!land) throw new EligibilityError("Land record not found.", 404, "LAND_NOT_FOUND");
-  if (land.farmer.toString() !== farmerId.toString()) {
-    throw new EligibilityError("You do not have access to this land record.", 403, "FORBIDDEN");
-  }
+const populateCoupon = async (id) => {
+  const c = await Coupon.findById(id).populate("land", "landName").populate("farmer", "name").lean();
+  return toCouponDTO(c);
+};
 
-  const landAreaAcres = toAcres(land.area.value, land.area.unit);
-  const resolvedCrop = crop || land.currentCrop || "";
-  const criteria = {
-    product,
-    productCategory,
-    state: land.location?.state || "",
-    district: land.location?.district || "",
-    crop: resolvedCrop,
-    landAreaAcres,
+export async function generateCoupon({ farmerId, landId, product, productCategory, quantityValue, crop }) {
+ if (!landId || !product || !productCategory) {
+ throw new EligibilityError("landId, product, and productCategory are required.", 400, "MISSING_FIELDS");
+ }
+
+ const { land, rule } = await findMatchingRule(landId, product, productCategory, crop || "");
+ const landArea = land.area?.value || 0;
+ const qty = quantityValue || computeQuantity(rule, landArea);
+
+ const existing = await Coupon.findOne({
+ farmer: farmerId,
+ land: landId,
+ product,
+ productCategory,
+ crop: crop || "",
+ status: "active",
+ });
+
+ if (existing) {
+ throw new EligibilityError("You already have an active coupon for this product and land.", 400, "DUPLICATE_COUPON");
+ }
+
+ const now = new Date();
+ const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+ const monthlyCount = await Coupon.countDocuments({
+ farmer: farmerId,
+ productCategory,
+ createdAt: { $gte: startOfMonth },
+ });
+
+ if (monthlyCount >= 5) {
+ throw new EligibilityError("Monthly limit reached. Maximum 5 coupons per month.", 429, "MONTHLY_LIMIT");
+ }
+
+  const code = generateCode();
+  const created = await Coupon.create({
+  code,
+  farmer: farmerId,
+  land: landId,
+  product,
+  productCategory,
+  quantityValue: qty,
+  crop: crop || "",
+  });
+
+  const coupon = await populateCoupon(created._id);
+  return { coupon, remainingQuota: 5 - monthlyCount - 1 };
+}
+
+export async function getMyCoupons(farmerId, status) {
+  const filter = { farmer: farmerId };
+  if (status) filter.status = status;
+  const list = await Coupon.find(filter).populate("land", "landName").populate("farmer", "name").sort({ createdAt: -1 }).lean();
+  return list.map(toCouponDTO);
+}
+
+export async function getMyLimits(farmerId) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthlyUsed = await Coupon.countDocuments({
+  farmer: farmerId,
+  createdAt: { $gte: startOfMonth },
+  });
+  // Android expects limits: List<SubsidyLimit>; also keep old counters for compat
+  const rules = await InputSubsidyRule.find({ isActive: true }).limit(20).lean();
+  const lands = await Land.find({ farmer: farmerId }).lean();
+  const landIds = lands.map((l) => l._id.toString());
+  const totalArea = lands.reduce((s, l) => s + (Number(l.area?.value) || 0), 0) || 1;
+  const coupons = await Coupon.find({ farmer: farmerId, createdAt: { $gte: startOfMonth } }).lean();
+  const limits = rules.map((r) => {
+  const eligible = computeQuantity(r, totalArea);
+  const allocated = coupons.filter((c) => c.productCategory === r.productCategory).reduce((s, c) => s + (Number(c.quantityValue) || 0), 0);
+  const remainingQty = Math.max(0, eligible - allocated);
+  return {
+  ruleId: r._id.toString(),
+  product: r.product,
+  productCategory: r.productCategory,
+  unit: r.maxAllowedQuantity?.unit || "bag",
+  quantityMode: r.quantityMode === "fixed" ? "flat" : r.quantityMode,
+  eligibleQuantity: eligible,
+  totalAllocated: allocated,
+  remainingQuantity: remainingQty,
+  usedPercent: eligible > 0 ? Math.round((allocated / eligible) * 100) : 0,
+  applicableLands: landIds,
   };
-
-  const allRules = await InputSubsidyRule.find({ product, productCategory, isActive: true }).lean();
-  const rule = findApplicableRule(allRules, criteria);
-
-  if (!rule) {
-    throw new EligibilityError(
-      `No active government subsidy rule matches product "${product}", category "${productCategory}"` +
-        (resolvedCrop ? `, crop "${resolvedCrop}"` : ", no crop specified") +
-        `. Double-check the product name matches exactly and that a crop is selected if the rule requires one.`,
-      404,
-      "NOT_ELIGIBLE"
-    );
-  }
-
-  const { maxAllowed, updatedCounter } = await reserveQuota(farmerId, rule, quantityValue, landAreaAcres);
-
-  const couponCode = await Coupon.generateUniqueCode();
-  let coupon = await Coupon.create({
-    farmer: farmerId,
-    land: land._id,
-    rule: rule._id,
-    product: rule.product,
-    productCategory: rule.productCategory,
-    quantity: { value: quantityValue, unit: rule.maxAllowedQuantity.unit },
-    couponCode,
-    status: "active",
-    expiresAt: Coupon.defaultExpiry(),
   });
-  // The Android app's Coupon model expects `land` AND `farmer` as
-  // populated objects ({landName} / {name}), matching the shape the
-  // dealer-facing redeemCoupon/lookupCoupon below already return - the
-  // freshly-created document only has both as raw ObjectIds, which
-  // fails to parse on the client (Gson throws "Expected BEGIN_OBJECT
-  // but was STRING") since the shared Coupon model expects an object,
-  // not a bare ID string, for both fields. Re-fetch populated before
-  // returning, exactly the same fix already applied to `land` here -
-  // this one was missed because `farmer` was added to the Android
-  // model in a later change than this function.
-  coupon = await Coupon.findById(coupon._id).populate("land", "landName").populate("farmer", "name");
+  return { monthlyUsed, monthlyLimit: 5, remaining: 5 - monthlyUsed, limits };
+}
 
-  return { coupon, remainingQuota: Math.max(0, maxAllowed - updatedCounter.totalAllocated) };
-};
+export async function lookupCoupon(code) {
+  if (!code) throw new EligibilityError("Coupon code is required.", 400, "MISSING_CODE");
+  const coupon = await Coupon.findOne({ code: code.toUpperCase() }).populate("land", "landName").populate("farmer", "name").lean();
+  if (!coupon) throw new EligibilityError("Coupon not found.", 404, "NOT_FOUND");
+  return toCouponDTO(coupon);
+}
 
-export const getMyCoupons = async (farmerId, status) => {
-  const query = { farmer: farmerId };
-  if (status) query.status = status;
-  return Coupon.find(query).sort({ createdAt: -1 }).populate("land", "landName").populate("farmer", "name");
-};
-
-/**
- * Farmer-facing "My Subsidy Limits" summary — for every active rule
- * that any of the farmer's lands qualify for, shows the total
- * entitlement, how much is used, and what remains. Sums proportionally
- * across multiple qualifying lands for per_area_rate rules; flat rules
- * report a single fixed value regardless of how many lands qualify.
- */
-export const getMyLimits = async (farmerId) => {
-  const [lands, allRules] = await Promise.all([
-    Land.find({ farmer: farmerId }).lean(),
-    InputSubsidyRule.find({ isActive: true }).lean(),
-  ]);
-  if (lands.length === 0 || allRules.length === 0) return [];
-
-  const rulesByProduct = new Map();
-  for (const rule of allRules) {
-    const key = `${rule.product.toLowerCase()}::${rule.productCategory}`;
-    if (!rulesByProduct.has(key)) rulesByProduct.set(key, []);
-    rulesByProduct.get(key).push(rule);
-  }
-
-  // Keyed by product+category (not by a single specific rule id) - see
-  // below for why. Tracks the eligible quantity (from re-matching
-  // against each land today) alongside every ruleId that's ever been
-  // relevant for this product, so actual usage can be summed across
-  // all of them.
-  const matched = new Map();
-  for (const land of lands) {
-    const landAreaAcres = toAcres(land.area.value, land.area.unit);
-    for (const [productKey, rulesForProduct] of rulesByProduct) {
-      const criteria = {
-        product: rulesForProduct[0].product,
-        productCategory: rulesForProduct[0].productCategory,
-        state: land.location?.state || "",
-        district: land.location?.district || "",
-        crop: land.currentCrop || "",
-        landAreaAcres,
-      };
-      const match = findApplicableRule(rulesForProduct, criteria);
-      if (!match) continue;
-
-      const landEligible = computeEligibleQuantityForFarmer(match, landAreaAcres);
-      if (!matched.has(productKey)) {
-        matched.set(productKey, { rule: match, landNames: new Set(), eligibleQuantity: 0, ruleIds: new Set() });
-      }
-      const entry = matched.get(productKey);
-      entry.landNames.add(land.landName);
-      entry.ruleIds.add(match._id.toString());
-      entry.eligibleQuantity =
-        match.quantityMode === "per_area_rate" ? entry.eligibleQuantity + landEligible : Math.max(entry.eligibleQuantity, landEligible);
-    }
-  }
-
-  if (matched.size === 0) return [];
-
-  // Usage is summed across EVERY rule id ever relevant for a product,
-  // not just whichever single rule re-matching against today's land
-  // data happens to pick. This is the actual fix: generateCoupon()
-  // resolves its crop from `crop || land.currentCrop` (the coupon
-  // form's own crop field can override the land's stored crop), while
-  // this function only ever had access to land.currentCrop - any time
-  // those two diverged, a coupon's usage was recorded against a
-  // different rule id than the one re-derived here, and a lookup keyed
-  // to a single ruleId would silently show 0 used despite real
-  // consumption. Summing across every ruleId that's ever matched this
-  // product for this farmer's rules closes that gap regardless of
-  // which specific rule any individual coupon was actually generated
-  // under.
-  const allProductRuleIds = new Set();
-  for (const entry of matched.values()) {
-    for (const id of entry.ruleIds) allProductRuleIds.add(id);
-  }
-  // Also include every rule id for each matched product (not just the
-  // ones that happened to match today), since a coupon could have been
-  // generated under a rule variant that no longer matches this land's
-  // current crop/state/district (e.g. the land's crop changed since).
-  for (const [productKey, entry] of matched) {
-    for (const rule of rulesByProduct.get(productKey) || []) {
-      allProductRuleIds.add(rule._id.toString());
-      entry.ruleIds.add(rule._id.toString());
-    }
-  }
-
-  const counters = await RuleAllocationCounter.find({
-    farmer: farmerId,
-    rule: { $in: Array.from(allProductRuleIds) },
-  }).lean();
-  const counterByRule = new Map(counters.map((c) => [c.rule.toString(), c.totalAllocated]));
-
-  return Array.from(matched.entries()).map(([, entry]) => {
-    const { rule, landNames, eligibleQuantity, ruleIds } = entry;
-    const totalAllocated = Array.from(ruleIds).reduce((sum, id) => sum + (counterByRule.get(id) || 0), 0);
-    const remainingQuantity = Math.max(0, eligibleQuantity - totalAllocated);
-    return {
-      ruleId: rule._id.toString(),
-      product: rule.product,
-      productCategory: rule.productCategory,
-      unit: rule.maxAllowedQuantity.unit,
-      quantityMode: rule.quantityMode,
-      eligibleQuantity,
-      totalAllocated,
-      remainingQuantity,
-      usedPercent: eligibleQuantity > 0 ? Math.round((totalAllocated / eligibleQuantity) * 100) : 0,
-      applicableLands: Array.from(landNames),
-    };
-  });
-};
-
-/**
- * Dealer/officer-initiated redemption — the farmer shows their coupon
- * code at the point of sale, the dealer looks it up and confirms it.
- * The quota was already reserved at generation time (see
- * generateCoupon above), so redemption doesn't touch the counter again,
- * it just confirms the reservation was actually used.
- */
-export const redeemCoupon = async (couponCode, redeemedBy) => {
-  const coupon = await Coupon.findOne({ couponCode: couponCode.trim().toUpperCase() })
-    .populate("farmer", "name")
-    .populate("land", "landName");
-
-  if (!coupon) {
-    throw new EligibilityError("No coupon found with that code.", 404, "COUPON_NOT_FOUND");
-  }
-
-  if (coupon.status === "active" && coupon.expiresAt < new Date()) {
-    coupon.status = "expired";
-    await coupon.save();
-  }
-
-  if (coupon.status !== "active") {
-    throw new EligibilityError(`This coupon is "${coupon.status}" and cannot be redeemed.`, 400, "INVALID_STATUS");
-  }
+export async function redeemCoupon(couponCode, redeemerId) {
+  const coupon = await Coupon.findOne({ code: couponCode.toUpperCase() });
+  if (!coupon) throw new EligibilityError("Coupon not found.", 404, "NOT_FOUND");
+  if (coupon.status !== "active") throw new EligibilityError("Coupon is not active.", 400, "INACTIVE_COUPON");
 
   coupon.status = "redeemed";
+  coupon.redeemedBy = redeemerId;
   coupon.redeemedAt = new Date();
   await coupon.save();
+  return await populateCoupon(coupon._id);
+}
 
-  return coupon;
-};
-
-/**
- * Look up a coupon by code without redeeming it — lets a dealer confirm
- * the farmer/product/quantity before committing to the redemption.
- */
-export const lookupCoupon = async (couponCode) => {
-  const coupon = await Coupon.findOne({ couponCode: couponCode.trim().toUpperCase() })
-    .populate("farmer", "name")
-    .populate("land", "landName");
-
-  if (!coupon) {
-    throw new EligibilityError("No coupon found with that code.", 404, "COUPON_NOT_FOUND");
-  }
-  return coupon;
-};
-
-/**
- * Lets a farmer discard a coupon they generated but haven't redeemed
- * yet, crediting the allocated quantity back to their remaining quota -
- * the exact mirror of reserveQuota() above. Only "active" coupons can
- * be cancelled; a coupon a dealer has already redeemed represents real
- * product handed over, so its quota is not refundable, and a coupon
- * that's already cancelled or expired has nothing left to reverse.
- */
-export const cancelCoupon = async (couponId, farmerId) => {
+export async function cancelCoupon(couponId, farmerId) {
   const coupon = await Coupon.findById(couponId);
-  if (!coupon) {
-    throw new EligibilityError("Coupon not found.", 404, "COUPON_NOT_FOUND");
-  }
-  if (coupon.farmer.toString() !== farmerId.toString()) {
-    throw new EligibilityError("You do not have access to this coupon.", 403, "FORBIDDEN");
-  }
-  if (coupon.status !== "active") {
-    throw new EligibilityError(`This coupon is "${coupon.status}" and can no longer be discarded.`, 400, "NOT_ACTIVE");
-  }
-
-  // Symmetric to reserveQuota()'s $inc: a negative increment credits
-  // the quantity back. No lower-bound guard is needed here the way
-  // reserveQuota() guards its upper bound - this coupon's own
-  // reservation is guaranteed to already be reflected in the counter
-  // (it was added when the coupon was created), so decrementing by
-  // that same amount can't drive the counter negative.
-  await RuleAllocationCounter.findOneAndUpdate(
-    { farmer: farmerId, rule: coupon.rule },
-    { $inc: { totalAllocated: -coupon.quantity.value } }
-  );
-
+  if (!coupon) throw new EligibilityError("Coupon not found.", 404, "NOT_FOUND");
+  if (coupon.farmer.toString() !== farmerId.toString()) throw new EligibilityError("Not authorized.", 403, "FORBIDDEN");
+  if (coupon.status !== "active") throw new EligibilityError("Only active coupons can be cancelled.", 400, "NOT_ACTIVE");
   coupon.status = "cancelled";
   await coupon.save();
-
-  return Coupon.findById(coupon._id).populate("land", "landName").populate("farmer", "name");
-};
+  return await populateCoupon(coupon._id);
+}

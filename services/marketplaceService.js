@@ -1,192 +1,119 @@
+import mongoose from "mongoose";
 import Listing from "../models/Listing.js";
 import Order from "../models/Order.js";
+import { ApiError } from "../utils/apiHelpers.js";
 
-export class MarketplaceError extends Error {
-  constructor(message, statusCode, code) {
-    super(message);
-    this.name = "MarketplaceError";
-    this.statusCode = statusCode;
-    this.code = code;
+export class MarketplaceError extends ApiError {
+  constructor(message, statusCode = 400, code = "MARKETPLACE_ERROR") {
+  super(message, statusCode, code);
+  this.name = "MarketplaceError";
   }
 }
 
-export const createListing = async (sellerId, data) => {
-  const { productName, category, quantityAvailable, unit, pricePerUnit, description } = data;
-  if (!productName || !category || !quantityAvailable || !unit || !pricePerUnit) {
-    throw new MarketplaceError("productName, category, quantityAvailable, unit, and pricePerUnit are all required.", 400, "MISSING_FIELDS");
+// ponytail: status alias for Android (expects status, DB uses isActive)
+const toListingDTO = (l) => {
+  if (!l) return l;
+  const o = { ...l };
+  if (o.isActive === false || o.quantityAvailable <= 0) o.status = "inactive";
+  else o.status = o.status || "active";
+  return o;
+};
+
+export async function createListing(sellerId, body) {
+  const { productName, category, description, quantityAvailable, unit, pricePerUnit, images, location, state, district } = body;
+  if (!productName || !category || !quantityAvailable || !pricePerUnit) {
+  throw new MarketplaceError("Product name, category, quantity, and price are required.", 400, "MISSING_FIELDS");
   }
-  const listing = await Listing.create({
-    seller: sellerId,
-    productName,
-    category,
-    quantityAvailable,
-    unit,
-    pricePerUnit,
-    description: description || "",
-    status: "active",
+  const created = await Listing.create({
+  seller: sellerId,
+  productName,
+  category,
+  description: description || "",
+  quantityAvailable: Number(quantityAvailable),
+  unit: unit || "kg",
+  pricePerUnit: Number(pricePerUnit),
+  images: images || [],
+  location: location || { state: state || "", district: district || "" },
   });
-  // The Android app's Listing model expects `seller` as a populated
-  // {name, location} object, matching what browseListings already
-  // returns below - the freshly-created document only has seller as a
-  // raw ObjectId, which fails to parse on the client (Gson throws
-  // "Expected BEGIN_OBJECT but was STRING") since the shared model
-  // expects an object, not a bare ID string. Re-fetch populated before
-  // returning - the same fix already proven necessary for
-  // generateCoupon in couponService.js.
-  return Listing.findById(listing._id).populate("seller", "name location");
-};
+  return toListingDTO(created.toObject());
+}
 
-export const browseListings = async ({ category, search } = {}) => {
-  const query = { status: "active", quantityAvailable: { $gt: 0 } };
-  if (category) query.category = category;
-  if (search) query.productName = { $regex: search, $options: "i" };
-  return Listing.find(query).sort({ createdAt: -1 }).populate("seller", "name location");
-};
+export async function browseListings({ category, search }) {
+  const filter = { isActive: true };
+  if (category) filter.category = new RegExp(category, "i");
+  if (search) filter.productName = new RegExp(search, "i");
+  const list = await Listing.find(filter).populate("seller", "name phone location").sort({ createdAt: -1 }).lean();
+  return list.map(toListingDTO);
+}
 
-export const getMyListings = async (sellerId) => {
-  // Populated for the same reason as createListing above: even though
-  // "my own listings" never needs to DISPLAY the seller's name (it's
-  // always the viewing farmer themselves), Gson still parses this field
-  // during JSON deserialization regardless of whether the UI later
-  // reads it - an unpopulated raw ObjectId here would crash parsing the
-  // whole list, not just silently leave a field unused.
-  return Listing.find({ seller: sellerId }).sort({ createdAt: -1 }).populate("seller", "name location");
-};
+export async function getMyListings(sellerId) {
+  const list = await Listing.find({ seller: sellerId }).sort({ createdAt: -1 }).lean();
+  return list.map(toListingDTO);
+}
 
-export const deactivateListing = async (listingId, sellerId) => {
-  const listing = await Listing.findById(listingId);
-  if (!listing) throw new MarketplaceError("Listing not found.", 404, "LISTING_NOT_FOUND");
-  if (listing.seller.toString() !== sellerId.toString()) {
-    throw new MarketplaceError("You do not have access to this listing.", 403, "FORBIDDEN");
-  }
-  listing.status = "inactive";
+export async function deactivateListing(listingId, sellerId) {
+  const listing = await Listing.findOne({ _id: listingId, seller: sellerId });
+  if (!listing) throw new MarketplaceError("Listing not found.", 404, "NOT_FOUND");
+  listing.isActive = false;
   await listing.save();
-  return Listing.findById(listing._id).populate("seller", "name location");
-};
+  return toListingDTO(listing.toObject());
+}
 
-export const updateListing = async (listingId, sellerId, data) => {
-  const listing = await Listing.findById(listingId);
-  if (!listing) throw new MarketplaceError("Listing not found.", 404, "LISTING_NOT_FOUND");
-  if (listing.seller.toString() !== sellerId.toString()) {
-    throw new MarketplaceError("You do not have access to this listing.", 403, "FORBIDDEN");
+export async function updateListing(listingId, sellerId, body) {
+  const listing = await Listing.findOne({ _id: listingId, seller: sellerId });
+  if (!listing) throw new MarketplaceError("Listing not found.", 404, "NOT_FOUND");
+
+  const allowed = ["productName", "description", "quantityAvailable", "pricePerUnit", "images", "location"];
+  for (const key of allowed) {
+  if (body[key] !== undefined) listing[key] = body[key];
   }
-
-  const { productName, category, quantityAvailable, unit, pricePerUnit, description } = data;
-  if (productName !== undefined) listing.productName = productName;
-  if (category !== undefined) listing.category = category;
-  if (quantityAvailable !== undefined) listing.quantityAvailable = quantityAvailable;
-  if (unit !== undefined) listing.unit = unit;
-  if (pricePerUnit !== undefined) listing.pricePerUnit = pricePerUnit;
-  if (description !== undefined) listing.description = description;
-
   await listing.save();
-  return Listing.findById(listing._id).populate("seller", "name location");
-};
+  return toListingDTO(listing.toObject());
+}
 
-/**
- * The atomic guard: a single findOneAndUpdate with the stock check
- * built into its own filter, so MongoDB serializes concurrent orders
- * against the same listing rather than needing application-level
- * locking - the exact same pattern already proven for coupon quota
- * reservation in services/couponService.js reserveQuota(). A second
- * concurrent request's filter is evaluated against the
- * already-decremented quantity from the first, and correctly fails if
- * there's no longer enough stock.
- */
-export const placeOrder = async (buyerId, { listingId, quantityOrdered }) => {
-  if (!quantityOrdered || quantityOrdered <= 0) {
-    throw new MarketplaceError("Quantity must be a positive number.", 400, "INVALID_QUANTITY");
-  }
+export async function placeOrder(buyerId, { listingId, quantityOrdered }) {
+ if (!listingId || !quantityOrdered) throw new MarketplaceError("Listing ID and quantity are required.", 400, "MISSING_FIELDS");
 
-  const listing = await Listing.findById(listingId);
-  if (!listing) throw new MarketplaceError("Listing not found.", 404, "LISTING_NOT_FOUND");
-  if (listing.seller.toString() === buyerId.toString()) {
-    throw new MarketplaceError("You cannot order your own listing.", 400, "SELF_ORDER");
-  }
+ const listing = await Listing.findById(listingId);
+ if (!listing) throw new MarketplaceError("Listing not found.", 404, "NOT_FOUND");
+ if (!listing.isActive) throw new MarketplaceError("This listing is no longer active.", 400, "INACTIVE");
+ if (listing.seller.toString() === buyerId.toString()) throw new MarketplaceError("Cannot order your own listing.", 400, "OWN_LISTING");
+ if (listing.quantityAvailable < Number(quantityOrdered)) throw new MarketplaceError("Insufficient quantity available.", 400, "INSUFFICIENT_QTY");
 
-  const updatedListing = await Listing.findOneAndUpdate(
-    { _id: listingId, status: "active", quantityAvailable: { $gte: quantityOrdered } },
-    { $inc: { quantityAvailable: -quantityOrdered } },
-    { new: true }
-  );
+ listing.quantityAvailable -= Number(quantityOrdered);
+ if (listing.quantityAvailable <= 0) listing.isActive = false;
+ await listing.save();
 
-  if (!updatedListing) {
-    const current = await Listing.findById(listingId).lean();
-    const remaining = current?.status === "active" ? current.quantityAvailable : 0;
-    throw new MarketplaceError(
-      `Not enough stock available. Requested ${quantityOrdered}, but only ${remaining} ${listing.unit} remain.`,
-      409,
-      "INSUFFICIENT_STOCK"
-    );
-  }
+ const totalPrice = Number(quantityOrdered) * Number(listing.pricePerUnit);
+ const order = await Order.create({
+ listing: listing._id,
+ seller: listing.seller,
+ buyer: buyerId,
+ productName: listing.productName,
+ quantityOrdered: Number(quantityOrdered),
+ unit: listing.unit,
+ pricePerUnit: Number(listing.pricePerUnit),
+ totalPrice,
+ });
 
-  if (updatedListing.quantityAvailable === 0) {
-    updatedListing.status = "sold_out";
-    await updatedListing.save();
-  }
+ return order;
+}
 
-  const totalPrice = Math.round(quantityOrdered * listing.pricePerUnit * 100) / 100;
+export async function getMyOrders(buyerId) {
+ return await Order.find({ buyer: buyerId }).populate("seller", "name phone").populate("listing", "productName category").sort({ createdAt: -1 }).lean();
+}
 
-  const order = await Order.create({
-    buyer: buyerId,
-    seller: listing.seller,
-    listing: listing._id,
-    productName: listing.productName,
-    quantityOrdered,
-    unit: listing.unit,
-    pricePerUnit: listing.pricePerUnit,
-    totalPrice,
-    status: "pending",
-  });
+export async function getReceivedOrders(sellerId) {
+ return await Order.find({ seller: sellerId }).populate("buyer", "name phone location").populate("listing", "productName category").sort({ createdAt: -1 }).lean();
+}
 
-  return Order.findById(order._id).populate("seller", "name").populate("buyer", "name");
-};
+export async function updateOrderStatus(orderId, sellerId, status) {
+ const valid = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
+ if (!valid.includes(status)) throw new MarketplaceError("Invalid status.", 400, "INVALID_STATUS");
 
-export const getMyOrders = async (buyerId) => {
-  // Populates BOTH buyer and seller, not just seller - the same lesson
-  // learned earlier for Listing/Machinery: Gson parses every field on
-  // the shared Order model during deserialization regardless of which
-  // one the UI actually displays, so an unpopulated ObjectId on EITHER
-  // field crashes parsing the whole list. This was missed here even
-  // after fixing it elsewhere, because it's easy to reason "the buyer
-  // viewing their own orders already knows they're the buyer" and
-  // conclude that field doesn't need populating - true for the UI,
-  // false for Gson.
-  return Order.find({ buyer: buyerId }).sort({ createdAt: -1 }).populate("seller", "name").populate("buyer", "name");
-};
-
-export const getReceivedOrders = async (sellerId) => {
-  return Order.find({ seller: sellerId }).sort({ createdAt: -1 }).populate("buyer", "name").populate("seller", "name");
-};
-
-/**
- * Only the seller can confirm or cancel an order against their own
- * listing. Cancelling restores the reserved stock back to the listing
- * (and reactivates it if it had gone sold_out) - the mirror image of
- * the atomic decrement in placeOrder above.
- */
-export const updateOrderStatus = async (orderId, sellerId, newStatus) => {
-  if (!["confirmed", "cancelled"].includes(newStatus)) {
-    throw new MarketplaceError("Status must be 'confirmed' or 'cancelled'.", 400, "INVALID_STATUS");
-  }
-
-  const order = await Order.findById(orderId);
-  if (!order) throw new MarketplaceError("Order not found.", 404, "ORDER_NOT_FOUND");
-  if (order.seller.toString() !== sellerId.toString()) {
-    throw new MarketplaceError("You do not have access to this order.", 403, "FORBIDDEN");
-  }
-  if (order.status !== "pending") {
-    throw new MarketplaceError(`This order is already "${order.status}" and cannot be changed.`, 400, "ALREADY_FINALIZED");
-  }
-
-  if (newStatus === "cancelled") {
-    await Listing.findOneAndUpdate(
-      { _id: order.listing },
-      { $inc: { quantityAvailable: order.quantityOrdered }, $set: { status: "active" } }
-    );
-  }
-
-  order.status = newStatus;
-  await order.save();
-  return Order.findById(order._id).populate("buyer", "name").populate("seller", "name");
-};
+ const order = await Order.findOne({ _id: orderId, seller: sellerId });
+ if (!order) throw new MarketplaceError("Order not found.", 404, "NOT_FOUND");
+ order.status = status;
+ await order.save();
+ return order;
+}

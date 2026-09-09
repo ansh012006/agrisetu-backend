@@ -13,7 +13,8 @@ export const register = async (req, res, next) => {
 
     const { name, email, password, role, phone, state, district } = req.body;
 
-    if (!PUBLIC_REGISTERABLE_ROLES.includes(role)) {
+    const finalRole = role || "farmer";
+    if (!PUBLIC_REGISTERABLE_ROLES.includes(finalRole)) {
       return res.status(400).json({ success: false, message: "Invalid role for self-registration." });
     }
 
@@ -26,7 +27,7 @@ export const register = async (req, res, next) => {
       name,
       email,
       password,
-      role,
+      role: finalRole,
       phone: phone || "",
       location: { state: state || "", district: district || "" },
     });

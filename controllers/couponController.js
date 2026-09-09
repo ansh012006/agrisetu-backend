@@ -41,8 +41,9 @@ export const getMyCouponsHandler = async (req, res, next) => {
 // @route   GET /api/coupons/my-limits
 export const getMyLimitsHandler = async (req, res, next) => {
   try {
-    const limits = await getMyLimits(req.user._id);
-    res.status(200).json({ success: true, limits });
+    const result = await getMyLimits(req.user._id);
+    // ponytail: list for Android + counters for compat
+    res.status(200).json({ success: true, limits: result.limits || [], monthlyUsed: result.monthlyUsed, monthlyLimit: result.monthlyLimit, remaining: result.remaining });
   } catch (error) {
     next(error);
   }

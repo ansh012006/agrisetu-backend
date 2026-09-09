@@ -2,25 +2,20 @@ import mongoose from "mongoose";
 
 const cropRecommendationSchema = new mongoose.Schema(
   {
-    farmer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    land: { type: mongoose.Schema.Types.ObjectId, ref: "Land", default: null },
-    recommendedCrops: [
-      {
-        cropName: { type: String, required: true },
-        suitabilityScore: { type: Number, min: 0, max: 100 },
-        reasoning: { type: String, default: "" },
-        expectedYield: { type: String, default: "" },
-      },
-    ],
-    soilConsiderations: [{ type: String }],
-    weatherConsiderations: [{ type: String }],
-    generalAdvice: [{ type: String }],
+  farmer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  land: { type: mongoose.Schema.Types.ObjectId, ref: "Land", required: true },
+  recommendedCrops: { type: mongoose.Schema.Types.Mixed, default: [] },
+  reasoning: { type: String, default: "" },
+  generalAdvice: [{ type: String }],
+  soilConsiderations: [{ type: String }],
+  weatherConsiderations: [{ type: String }],
+  soilType: { type: String, default: "" },
+  season: { type: String, default: "" },
+  confidence: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 cropRecommendationSchema.index({ farmer: 1, createdAt: -1 });
 
-const CropRecommendation = mongoose.model("CropRecommendation", cropRecommendationSchema);
-
-export default CropRecommendation;
+export default mongoose.model("CropRecommendation", cropRecommendationSchema);
