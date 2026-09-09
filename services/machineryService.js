@@ -14,16 +14,24 @@ export class MachineryError extends ApiError {
 const toMachineryDTO = (m) => {
   if (!m) return m;
   const o = { ...m };
+  // owner must be an object for Gson; unpopulated ObjectId strings crash the app
+  if (typeof o.owner === "string") o.owner = { name: "" };
   o.rentPricePerDay = o.rentalPricePerDay ?? o.rentPricePerDay ?? 0;
   o.rentalPricePerDay = o.rentPricePerDay;
   o.status = o.isActive === false ? "inactive" : "available";
   return o;
 };
 
+const populateMachinery = (id) =>
+  Machinery.findById(id).populate("owner", "name phone location").lean();
+
 const toBookingDTO = (b) => {
   if (!b) return b;
   const o = { ...b };
   const mach = o.machinery && typeof o.machinery === "object" ? o.machinery : null;
+  if (typeof o.machinery === "string") o.machinery = null;
+  if (typeof o.owner === "string") o.owner = { name: "" };
+  if (typeof o.renter === "string") o.renter = { name: "" };
   o.machineryName = mach?.name || o.machineryName || "";
   o.rentPricePerDay = mach?.rentalPricePerDay ?? mach?.rentPricePerDay ?? o.rentPricePerDay ?? 0;
   if (o.renter && typeof o.renter === "object") o.farmer = { name: o.renter.name || "" };
@@ -48,7 +56,7 @@ export async function createMachinery(ownerId, body) {
   location: location || { state: state || "", district: district || "" },
   images: images || [],
   });
-  return toMachineryDTO(created.toObject());
+  return toMachineryDTO((await populateMachinery(created._id)) || created.toObject());
 }
 
 export async function browseMachinery({ category }) {
@@ -59,7 +67,7 @@ export async function browseMachinery({ category }) {
 }
 
 export async function getMyMachinery(ownerId) {
-  const list = await Machinery.find({ owner: ownerId }).sort({ createdAt: -1 }).lean();
+  const list = await Machinery.find({ owner: ownerId }).populate("owner", "name phone location").sort({ createdAt: -1 }).lean();
   return list.map(toMachineryDTO);
 }
 
@@ -68,7 +76,7 @@ export async function deactivateMachinery(id, ownerId) {
   if (!m) throw new MachineryError("Machinery not found.", 404, "NOT_FOUND");
   m.isActive = false;
   await m.save();
-  return toMachineryDTO(m.toObject());
+  return toMachineryDTO((await populateMachinery(m._id)) || m.toObject());
 }
 
 export async function updateMachinery(id, ownerId, body) {
@@ -78,7 +86,7 @@ export async function updateMachinery(id, ownerId, body) {
   const allowed = ["name", "description", "brand", "model", "year", "condition", "rentalPricePerDay", "rentalPricePerHour", "location", "images"];
   for (const key of allowed) { if (body[key] !== undefined) m[key] = body[key]; }
   await m.save();
-  return toMachineryDTO(m.toObject());
+  return toMachineryDTO((await populateMachinery(m._id)) || m.toObject());
 }
 
 export async function createBooking(renterId, { machineryId, startDate, endDate }) {
@@ -127,6 +135,6 @@ export async function updateBookingStatus(bookingId, ownerId, status) {
   if (!booking) throw new MachineryError("Booking not found.", 404, "NOT_FOUND");
   booking.status = status;
   await booking.save();
-  const populated = await Booking.findById(booking._id).populate("machinery", "name category rentalPricePerDay").lean();
+  const populated = await Booking.findById(booking._id).populate("machinery", "name category rentalPricePerDay").populate("owner", "name phone").populate("renter", "name phone").lean();
   return toBookingDTO(populated || booking.toObject());
 }
