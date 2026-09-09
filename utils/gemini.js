@@ -12,36 +12,55 @@ export class GeminiServiceError extends Error {
 let genAI = null;
 
 function getClient() {
- if (!genAI) {
- const apiKey = process.env.GEMINI_API_KEY;
- if (!apiKey) throw new GeminiServiceError("GEMINI_API_KEY is not set.", 500, "MISSING_API_KEY");
- genAI = new GoogleGenerativeAI(apiKey);
- }
- return genAI;
+  if (!genAI) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new GeminiServiceError("GEMINI_API_KEY is not set.", 500, "MISSING_API_KEY");
+  genAI = new GoogleGenerativeAI(apiKey);
+  }
+  return genAI;
+}
+
+// ponytail: surface real cause (bad model vs bad key vs quota) instead of generic 502
+function mapGeminiError(err, fallbackCode = "ANALYSIS_ERROR") {
+  if (err instanceof GeminiServiceError) return err;
+  const msg = err?.message || String(err);
+  if (/404|not found|unknown model|is not found/i.test(msg))
+  return new GeminiServiceError(`Gemini model not found. Set GEMINI_MODEL to a valid model (e.g. gemini-2.0-flash). Details: ${msg.slice(0, 200)}`, 502, "MODEL_NOT_FOUND");
+  if (/400|invalid.*key|API key|API_KEY/i.test(msg))
+  return new GeminiServiceError(`Invalid Gemini API key. Get one from Google AI Studio (starts with AIza). Details: ${msg.slice(0, 200)}`, 502, "INVALID_API_KEY");
+  if (/429|quota|rate limit|exhausted/i.test(msg))
+  return new GeminiServiceError("Gemini quota exceeded. Try again later.", 429, "QUOTA_EXCEEDED");
+  if (/503|overloaded|unavailable/i.test(msg))
+  return new GeminiServiceError("Gemini service unavailable. Try again later.", 503, "SERVICE_UNAVAILABLE");
+  return new GeminiServiceError(`Image analysis failed: ${msg.slice(0, 300)}`, 502, fallbackCode);
 }
 
 export async function callGemini(prompt, options = {}) {
- const client = getClient();
- const modelName = options.model || process.env.GEMINI_MODEL || "gemini-2.0-flash";
- const model = client.getGenerativeModel({ model: modelName });
+  try {
+  const client = getClient();
+  const modelName = options.model || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const model = client.getGenerativeModel({ model: modelName });
 
- const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "30000");
+  const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "30000");
 
- const result = await Promise.race([
- model.generateContent(prompt),
- new Promise((_, reject) =>
- setTimeout(() => reject(new GeminiServiceError("Gemini request timed out.", 504, "TIMEOUT")), timeoutMs)
- ),
- ]);
+  const result = await Promise.race([
+  model.generateContent(prompt),
+  new Promise((_, reject) =>
+  setTimeout(() => reject(new GeminiServiceError("Gemini request timed out.", 504, "TIMEOUT")), timeoutMs)
+  ),
+  ]);
 
- const response = await result.response;
- const text = response.text();
+  const response = await result.response;
+  const text = response.text();
 
- if (!text || text.trim().length === 0) {
- throw new GeminiServiceError("Gemini returned an empty response.", 502, "EMPTY_RESPONSE");
- }
+  if (!text || text.trim().length === 0) {
+  throw new GeminiServiceError("Gemini returned an empty response.", 502, "EMPTY_RESPONSE");
+  }
 
- return text.trim();
+  return text.trim();
+  } catch (err) {
+  throw mapGeminiError(err, "GEMINI_ERROR");
+  }
 }
 
 export async function analyzeCropImage({ buffer, mimeType }) {
@@ -91,7 +110,6 @@ export async function analyzeCropImage({ buffer, mimeType }) {
   cropsAffected: Array.isArray(data.cropsAffected) ? data.cropsAffected : [],
   };
   } catch (err) {
-  if (err instanceof GeminiServiceError) throw err;
-  throw new GeminiServiceError("Image analysis failed: " + err.message, 502, "ANALYSIS_ERROR");
+  throw mapGeminiError(err, "ANALYSIS_ERROR");
   }
 }
