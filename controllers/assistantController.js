@@ -11,8 +11,24 @@ import CropRecommendation from "../models/CropRecommendation.js";
 // @access  farmer
 export const askAssistantHandler = async (req, res, next) => {
   try {
-    const { question } = req.body;
-    const answer = await askAssistant(question);
+    const { question, location } = req.body;
+    // ponytail: pull location from user's saved land if not passed in
+    let resolvedLocation = location;
+    if (!resolvedLocation || (!resolvedLocation.state && !resolvedLocation.district)) {
+      try {
+        const firstLand = await Land.findOne({ farmer: req.user._id }).lean();
+        if (firstLand) {
+          resolvedLocation = {
+            state: firstLand.location?.state || "",
+            district: firstLand.location?.district || "",
+            village: firstLand.location?.village || "",
+          };
+        }
+      } catch {
+        // ignore — proceed without location
+      }
+    }
+    const answer = await askAssistant(question, "", resolvedLocation || null);
     res.status(200).json({ success: true, answer });
   } catch (error) {
     if (error instanceof GeminiServiceError) {
@@ -44,7 +60,13 @@ export const contextualAskHandler = async (req, res, next) => {
       bookings.length ? `Bookings: ${bookings.length}` : "",
       coupons.length ? `Active coupons: ${coupons.length}` : "",
     ].filter(Boolean).join("\n");
-    const answer = await askAssistant(question, context);
+    const firstLand = lands[0] || {};
+    const location = {
+      state: firstLand.location?.state || "",
+      district: firstLand.location?.district || "",
+      village: firstLand.location?.village || "",
+    };
+    const answer = await askAssistant(question, context, location);
     res.status(200).json({
       success: true,
       answer,

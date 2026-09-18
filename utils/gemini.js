@@ -12,16 +12,28 @@ export class GeminiServiceError extends Error {
 let genAI = null;
 
 // ponytail: only remap known-shutdown models; pass anything else through so future models keep working
-const DEAD_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.0-pro"];
+const DEAD_MODELS = [
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-lite",
+  "gemini-1.5-pro",
+  "gemini-1.0-pro",
+];
 const DEFAULT_MODEL = "gemini-3.8-flash";
 
+// ponytail: fallback chain — if the preferred model is unavailable, try
+// cheaper/lighter ones before giving up. This makes the AI assistant
+// robust against model outages or key-tier mismatches.
+const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"];
+
 function resolveModel(explicit) {
-  const name = explicit || process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  if (DEAD_MODELS.includes(name)) {
+ const name = explicit || process.env.GEMINI_MODEL || DEFAULT_MODEL;
+ if (DEAD_MODELS.includes(name)) {
   console.warn(`[Gemini] Model "${name}" is shut down, falling back to ${DEFAULT_MODEL}.`);
   return DEFAULT_MODEL;
-  }
-  return name;
+ }
+ return name;
 }
 
 function getClient() {
@@ -33,31 +45,66 @@ function getClient() {
   return genAI;
 }
 
+// Tries the primary model then falls back through FALLBACK_MODELS if
+// the primary is not found (404) or temporarily unavailable (503).
+async function callWithFallbacks(modelFactory, prompt) {
+ const primaryModel = resolveModel();
+ const tried = [];
+
+ // First try: primary model with streaming disabled for speed.
+ let lastErr = null;
+ for (const modelName of [primaryModel, ...FALLBACK_MODELS]) {
+  if (tried.includes(modelName)) continue; // deduplicate
+  tried.push(modelName);
+  try {
+  const model = modelFactory(modelName);
+  const result = await model.generateContent(prompt);
+  return result;
+  } catch (err) {
+  lastErr = err;
+  const msg = err?.message || String(err);
+  // Only fall back on 404 (model not found) or 503 (overloaded).
+  // For other errors (quota 429, invalid key 400, etc.) we don't
+  // want to waste API calls on every fallback.
+  if (/404|not found|unknown model|is not found|503|overloaded|unavailable/i.test(msg)) {
+   console.warn(`[Gemini] Model "${modelName}" unavailable (${msg.slice(0, 100)}), trying next fallback...`);
+   continue;
+  }
+  // For non-retryable errors, surface immediately.
+  break;
+  }
+ }
+ // All models failed — surface the last error so mapGeminiError can translate it.
+ throw lastErr;
+}
+
 // ponytail: surface real cause (bad model vs bad key vs quota) instead of generic 502
 function mapGeminiError(err, fallbackCode = "ANALYSIS_ERROR") {
   if (err instanceof GeminiServiceError) return err;
   const msg = err?.message || String(err);
   if (/404|not found|unknown model|is not found/i.test(msg))
-  return new GeminiServiceError(`Gemini model not found. Set GEMINI_MODEL to a live model (e.g. gemini-3.8-flash). Details: ${msg.slice(0, 200)}`, 502, "MODEL_NOT_FOUND");
+  return new GeminiServiceError(`Gemini model not found. Contact support to update the model name. Details: ${msg.slice(0, 200)}`, 502, "MODEL_NOT_FOUND");
   if (/400|invalid.*key|API key|API_KEY/i.test(msg))
   return new GeminiServiceError(`Invalid Gemini API key. Get one from Google AI Studio (starts with AIza). Details: ${msg.slice(0, 200)}`, 502, "INVALID_API_KEY");
   if (/429|quota|rate limit|exhausted/i.test(msg))
   return new GeminiServiceError("Gemini quota exceeded. Try again later.", 429, "QUOTA_EXCEEDED");
   if (/503|overloaded|unavailable/i.test(msg))
-  return new GeminiServiceError("Gemini service unavailable. Try again later.", 503, "SERVICE_UNAVAILABLE");
-  return new GeminiServiceError(`Image analysis failed: ${msg.slice(0, 300)}`, 502, fallbackCode);
+  return new GeminiServiceError("Gemini service temporarily overloaded. Try again in a few seconds.", 503, "SERVICE_UNAVAILABLE");
+  return new GeminiServiceError(`AI service error: ${msg.slice(0, 300)}`, 502, fallbackCode);
 }
 
 export async function callGemini(prompt, options = {}) {
   try {
   const client = getClient();
   const modelName = resolveModel(options.model);
-  const model = client.getGenerativeModel({ model: modelName });
 
-  const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "30000");
+  const timeoutMs = options.timeout || parseInt(process.env.GEMINI_TIMEOUT_MS || "120000");
 
   const result = await Promise.race([
-  model.generateContent(prompt),
+  callWithFallbacks(
+  (name) => client.getGenerativeModel({ model: name }),
+  prompt
+  ),
   new Promise((_, reject) =>
   setTimeout(() => reject(new GeminiServiceError("Gemini request timed out.", 504, "TIMEOUT")), timeoutMs)
   ),
@@ -87,10 +134,13 @@ export async function analyzeCropImage({ buffer, mimeType }) {
 
   try {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: resolveModel() });
+  const modelName = resolveModel();
 
   const result = await Promise.race([
-  model.generateContent([prompt, imagePart]),
+  callWithFallbacks(
+  (name) => client.getGenerativeModel({ model: name }),
+  [prompt, imagePart]
+  ),
   new Promise((_, reject) =>
   setTimeout(() => reject(new GeminiServiceError("Analysis timed out.", 504, "TIMEOUT")), parseInt(process.env.GEMINI_VISION_TIMEOUT_MS || "60000"))
   ),
