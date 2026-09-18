@@ -9,6 +9,15 @@ dotenv.config();
 
 const app = express();
 
+// Catch any unhandled promise rejections so the process doesn't die silently.
+process.on("unhandledRejection", (err) => {
+  console.error("[Server] Unhandled promise rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[Server] Uncaught exception:", err);
+});
+
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -26,6 +35,6 @@ const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {
  app.listen(PORT, () => {
- console.log(`[Server] Running on port ${PORT} (${process.env.NODE_ENV || "development"})`);
+  console.log(`[Server] Running on port ${PORT} (${process.env.NODE_ENV || "development"})`);
  });
 });

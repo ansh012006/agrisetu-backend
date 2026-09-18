@@ -1,12 +1,4 @@
-import express from "express";
-import { getPrices } from "../controllers/mandiController.js";
-import { protect, authorize } from "../middleware/auth.js";
-import { ROLES } from "../utils/roles.js";
-
-const router = express.Router();
-
-router.use(protect, authorize(ROLES.FARMER));
-
-router.get("/prices", getPrices);
-
-export default router;
+// Empty stub - duplicates were left over from an earlier refactor.
+// The active router is ./mandi.routes.js (already wired into routes/index.js).
+// Keeping this file so any leftover require() does not crash the server.
+export { default } from "./mandi.routes.js";
